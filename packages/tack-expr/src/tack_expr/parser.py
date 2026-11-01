@@ -779,6 +779,25 @@ def _polyhedral_links(topology):
 
 # --- kernel assembly ------------------------------------------------------
 
+_ASSIGNMENT = re.compile(r"([A-Za-z_]\w*) = .*")
+_NAME = re.compile(r"[A-Za-z_]\w*")
+
+
+def _live(lines, results):
+    """lines without the top-level assignments that nothing after them reads, results
+    included. A pass computes every component, gradient and Hessian of what it reads, and
+    a kernel pays to compile all of them; loops and other lines stay, with what they read."""
+    needed = set(_NAME.findall(" ".join(results)))
+    kept = []
+    for line in reversed(lines):
+        m = _ASSIGNMENT.fullmatch(line)
+        if m and m.group(1) not in needed:
+            continue
+        kept.append(line)
+        needed.update(_NAME.findall(line))
+    return kept[::-1]
+
+
 def _loop(mode, body, results, uses_pc, count="(target.ORDER + 1) ** dom.DIMENSION"):
     """The kernel's loop: body, then each result stored in its output (out, or out0, out1...)."""
     outs = ["out"] if len(results) == 1 else [f"out{k}" for k in range(len(results))]
@@ -988,7 +1007,7 @@ def _compile(texts, data, at, replace_invalid, names):
     params += outs + [f"c{k}" for k in range(len(c.consts))]
     head = _imports(c) + "\n\n@tack.kernel\ndef fx(" + ", ".join(params) + "):\n"
 
-    lines, uses_pc, reference = list(c.lines), c.uses_pc, c.reference
+    lines, uses_pc, reference = _live(c.lines, results), c.uses_pc, c.reference
 
     def make(variant):
         count = variant if mode == "nodes" else ("dom.NUM_POINTS" if reference else "")
@@ -1098,7 +1117,7 @@ def function(text, data, at="cells"):
     result, rtype = c.parse()
     names = [f"A{k}" for k in range(len(c.args))] + [f"c{k}" for k in range(len(c.consts))]
     swap = re.compile(r"\b([Ac]\d+)\b")
-    body = [swap.sub(r"self.\1", line) for line in c.lines] + [f"return {swap.sub(r'self.' + chr(92) + '1', result)}"]
+    body = [swap.sub(r"self.\1", line) for line in _live(c.lines, [result])] + [f"return {swap.sub(r'self.' + chr(92) + '1', result)}"]
     if at == "faces":
         signature = "value(self, dom, f)"
         body = ["e = dom.entity_id(f)", "s0 = dom.side_cell(f, 0)", "s1 = dom.side_cell(f, 1)",

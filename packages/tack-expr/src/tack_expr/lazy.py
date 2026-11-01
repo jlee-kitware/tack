@@ -78,7 +78,7 @@ def field(text, data):
     if rtype != P.S:
         raise P.ExprError("a field to contour or clip is a scalar expression", 0, text)
     parts = [("A", list(c.args), list(c.consts))]
-    methods = _method(c.lines, result, "A", "value", "self, c, pc")
+    methods = _method(P._live(c.lines, [result]), result, "A", "value", "self, c, pc")
     imports = P._imports(c)
     continuous = False
     try:
@@ -86,7 +86,7 @@ def field(text, data):
         corner, _ = k.parse()
         parts.append(("B", list(k.args), list(k.consts)))
         head = ["pc = self.dom.parametric_point(j)"] if k.uses_pc else []
-        methods += _method(k.lines, corner, "B", "corner_value", "self, c, j", head)
+        methods += _method(P._live(k.lines, [corner]), corner, "B", "corner_value", "self, c, j", head)
         imports = "\n".join(sorted(set(imports.splitlines()) | set(P._imports(k).splitlines()))) + "\n"
         continuous = not c.uses_derivatives and not c.uses_world_gradient
     except (P.ExprError, P._NeedCorners):
