@@ -300,8 +300,7 @@ example, `flux * 2` in a cell expression gives "'flux' is on faces, the expressi
 fsum(flux)", and `TC + 1` in a point expression gives "'TC' is not continuous; use points(TC) for
 point values".
 
-A second test, `test_more.py`, covers what was added after the first: 33 checks, all passing on
-CUDA and CPU.
+Further checks cover what was added after the first, all passing on CUDA and CPU:
 
 | Check | Compared against | Largest relative difference |
 | --- | --- | --- |
@@ -321,20 +320,21 @@ On the Tack branch, the new spaces' tests pass on CPU and CUDA, and Tack's full 
 gives 3,606 passed and 664 skipped. Its one failure, `test_vtk_char_arrays_come_across_as_i8`,
 fails on main as well.
 
-Later tests cover the second and third rounds of work, all passing on CUDA and CPU:
+The second and third rounds of work have a test module each, all passing on CUDA and CPU:
 
 | Test | Checks | Compared against | Largest difference |
 | --- | --- | --- | --- |
-| `test_derivatives.py` | 16 expressions' `grad`, `div`, `curl` and `qcrit` at cells and at order-2 nodes | float64 central differences of the exact fields | 6e-7 at cells, 3.5e-6 at nodes |
-| `test_second.py` | 11 second-derivative expressions at cells and nodes, in float32 and float64 | float64 central differences of the exact fields | 2e-4 in float32, 1e-13 in float64 |
-| `test_many.py` | 10 expressions compiled three or five to a kernel | each expression's own kernel | 0 |
-| `test_points.py` | `points()` on uniform, 2D, rectilinear, renumbered, mixed and polyhedral meshes, with no `td.project` call | `td.project`, `vtkCellDataToPointData` | 0; 1.2e-7 |
-| `test_ghosts.py` | a chain of four evaluations on pieces, with and without the ghost refresh; projection into `H1`; cache cleanup | the unsplit mesh; `td.project` | 1e-7 with the refresh, 1.6e-3 without |
-| `test_contour.py` | contours of expression fields, linear and order 2, with derivatives | contours of stored fields; the exact level | identical; 1.3e-7 from the level |
+| `test_expr_derivatives.py` | 16 expressions' `grad`, `div`, `curl` and `qcrit` at cells and at order-2 nodes | float64 central differences of the exact fields | 6e-7 at cells, 3.5e-6 at nodes |
+| `test_expr_second.py` | 11 second-derivative expressions at cells and nodes, in float32 and float64 | float64 central differences of the exact fields | 2e-4 in float32, 1e-13 in float64 |
+| `test_expr_many.py` | 10 expressions compiled three or five to a kernel | each expression's own kernel | 0 |
+| `test_expr_points.py` | `points()` on uniform, 2D, rectilinear, renumbered, mixed and polyhedral meshes, with no `td.project` call | `td.project`, `vtkCellDataToPointData` | 0; 1.2e-7 |
+| `test_expr_pieces.py` | a chain of four evaluations on pieces, with and without the ghost refresh | the unsplit mesh | 1e-7 with the refresh, 1.6e-3 without |
+| `test_expr_contour.py` | contours of expression fields, linear and order 2, with derivatives | contours of stored fields; the exact level | identical; 1.3e-7 from the level |
 | Tack's `test_vector_spaces.py` | `HDiv` and `HCurl` on hexahedra, tetrahedra, orders 1 to 3, and on hexahedra numbered from random rotations | the fields of each space | 2e-5 |
 
-The tests are the `test_*.py` scripts in `packages/tack-expr`, each run as
-`python test_more.py cuda` (or `cpu`); they print each check and a count.
+The tests are in `packages/tack-expr/tests` and run with Tack's suite on every available backend
+(`uv run pytest packages/tack-expr/tests`). The examples in `packages/tack-expr/examples` check
+their results too, and run in the suite's example sweep (`uv run pytest -m slow`).
 
 ## Performance
 
