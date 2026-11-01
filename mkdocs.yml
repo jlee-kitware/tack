@@ -128,6 +128,7 @@ nav:
       - Run and Diagnose:
           - Backends: users-guide/08-backends.md
           - Sharing Arrays: users-guide/16-interoperability.md
+          - Communicate Between Blocks: users-guide/18-communication.md
           - Debugging and Timing: users-guide/15-debugging-and-timing.md
           - The Kernel Cache: users-guide/17-kernel-cache.md
       - Worked Examples:
@@ -140,10 +141,12 @@ nav:
           - Tiled N-body Forces: users-guide/tutorials/nbody.md
   - Visualization Guide:
       - vis-guide/index.md
+      - Introduction: vis-guide/introduction.md
       - The Data Model:
           - Function Space Fundamentals: vis-guide/00-function-spaces.md
           - Understand a Dataset: vis-guide/01-datasets.md
           - Fields and Spaces: vis-guide/03-fields-and-spaces.md
+          - Cell Types and Bases: vis-guide/16-cells-and-bases.md
           - Physical Units: vis-guide/12-units.md
       - Work with Data:
           - Build Meshes: vis-guide/02-meshes.md
@@ -151,6 +154,7 @@ nav:
           - AMR Hierarchies: vis-guide/10-amr.md
           - Octrees: vis-guide/11-octrees.md
           - Filter and Analyze: vis-guide/04-filters.md
+          - "Views: How a Kernel Sees a Dataset": vis-guide/17-views.md
           - Write Mesh Algorithms: vis-guide/05-mesh-kernels.md
           - Write a Filter: vis-guide/15-write-a-filter.md
           - Sample and Connect Simulations: vis-guide/06-pipelines.md
@@ -158,9 +162,10 @@ nav:
       - Data in Pieces:
           - Work with Data in Pieces: vis-guide/07-partitioned.md
           - Algorithms Across Pieces: vis-guide/09-pieces-across.md
-          - Communicate Between Blocks: vis-guide/14-communication.md
+          - Pieces and Blocks: vis-guide/14-communication.md
       - Worked Examples: vis-guide/examples.md
       - Gallery: vis-guide/gallery.md
+      - MFEM Gallery: vis-guide/mfem-gallery.md
       - Reference:
           - Dataset API: vis-guide/reference/dataset-api.md
           - Algorithms: vis-guide/reference/algorithms.md

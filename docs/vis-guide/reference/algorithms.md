@@ -297,7 +297,7 @@ New fields computed from a dataset's fields.
 | [`cross`](#tack.dataset.algorithms.cross.cross) | the cross product of two 3-vector fields | dataset | — | CrossProduct |
 | [`composite`](#tack.dataset.algorithms.composite.composite) | scalar fields as the components of a vector field | dataset | — | CompositeVectors |
 | [`log_values`](#tack.dataset.algorithms.log_values.log_values) | the logarithm of a field, in any base | dataset | — | LogValues |
-| [`convert`](#tack.dataset.algorithms.convert.convert) | a field, or the geometry, in another unit | dataset | — | — |
+| [`convert`](#tack.dataset.algorithms.convert.convert) | a field, or a dataset's field or geometry, in another unit | field, dataset | — | — |
 
 ::: tack.dataset.algorithms.gradients.gradients
     options: {show_root_full_path: false}
@@ -370,8 +370,15 @@ Python numbers about a field, over every piece and rank.
 |---|---|---|---|---|
 | [`statistics`](#tack.dataset.algorithms.statistics.statistics) | count, extrema, mean, moments, variance, skewness, kurtosis; weighted | dataset, pieces, AMR, octree | vtkDescriptiveStatistics | Statistics |
 | [`entropy`](#tack.dataset.algorithms.entropy.entropy) | Shannon entropy of a field's histogram | dataset, pieces, AMR, octree | — | Entropy |
+| [`integrate`](#tack.dataset.algorithms.integrate.integrate) | the measure and fields' integrals, by quadrature through each cell's own map (curved and high-order exactly) | dataset, pieces | vtkIntegrateAttributes | — |
 
 ::: tack.dataset.algorithms.statistics.statistics
+    options: {show_root_full_path: false}
+
+::: tack.dataset.algorithms.integrate.integrate
+    options: {show_root_full_path: false}
+
+::: tack.dataset.algorithms.integrate.Integrals
     options: {show_root_full_path: false}
 
 ::: tack.dataset.algorithms.statistics.Statistics

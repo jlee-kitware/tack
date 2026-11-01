@@ -69,7 +69,7 @@ class Space:
 
     def __new__(cls, where, *args, **kwargs):
         topology = getattr(where, "topology", where)
-        params = cls._params(*args, **kwargs)
+        params = cls._params(*args, **cls._defaults(topology, args, kwargs))
         # An array parameter (an order per cell) is not hashable: the space is
         # one per array object, which it keeps alive, so its id stays unique.
         key = (cls, tuple(sorted((k, ("array", id(v)) if _is_array(v) else v)
@@ -91,6 +91,11 @@ class Space:
     @classmethod
     def _params(cls):
         return {}
+
+    @classmethod
+    def _defaults(cls, topology, args, kwargs):
+        """``kwargs`` with the defaults that depend on the mesh filled in."""
+        return kwargs
 
     @property
     def _device(self):
@@ -257,6 +262,20 @@ def _interior_counts(cells, order, counts):
         counts[cells.entity_id(c)] = n
 
 
+def _default_basis(cls, topology, args, kwargs):
+    """``kwargs`` with ``basis`` the mesh's own where it is not given: equispaced
+    where the mesh has simplices or wedges, the one family they have above order 2
+    (so its quad faces match a hexahedron's), else Gauss-Lobatto."""
+    if len(args) > 1 or "basis" in kwargs:
+        return kwargs
+    order = args[0] if args else kwargs.get("order", 1)
+    if _is_array(order):
+        return kwargs
+    simplicial = any(g.count and (bases.simplex_shape(g.shape) or bases.wedge_shape(g.shape))
+                     for g in topology.groups()) if int(order) > 2 else False
+    return {**kwargs, "basis": "equispaced" if simplicial else "gauss_lobatto"}
+
+
 def _basis_param(family, order, families, space):
     """``basis`` as a space keeps it: ``None`` where the order makes the families
     agree (at most 2 for the closed node sets, at most 1 for Bernstein's), so equal
@@ -396,9 +415,10 @@ class H1(Space):
     triangles, quads and pixels). Order 3 and up are on segments, quads, pixels,
     hexahedra and voxels (``tack.dataset.bases``): ``order - 1`` values per edge,
     ``(order - 1)^2`` per quad face and ``(order - 1)^d`` per cell, in the
-    ``basis`` ``"gauss_lobatto"`` (the default: Lagrange polynomials on
-    Gauss-Lobatto nodes) or ``"equispaced"`` (on equispaced nodes), which agree
-    up to order 2; or ``"bernstein"``: the Bernstein polynomials' coefficients,
+    ``basis`` ``"gauss_lobatto"`` (Lagrange polynomials on Gauss-Lobatto nodes) or
+    ``"equispaced"`` (on equispaced nodes), which agree up to order 2 (by default
+    equispaced where the mesh has triangles, tetrahedra or wedges, else
+    Gauss-Lobatto); or ``"bernstein"``: the Bernstein polynomials' coefficients,
     not values at nodes (VTK's Bezier cells; from order 2, on every shape here).
     On triangles, tetrahedra and wedges with ``basis="equispaced"`` (VTK's and
     gmsh's) or ``"bernstein"``: ``(order - 1)(order - 2) / 2`` per
@@ -426,6 +446,8 @@ class H1(Space):
     interpolated = True
     basis = None
     dofs = None
+
+    _defaults = classmethod(_default_basis)
 
     @classmethod
     def _params(cls, order=1, basis="gauss_lobatto", dofs=None):
@@ -461,8 +483,9 @@ class H1(Space):
         if self.order == 1:
             return views._H1Field
         if self.order == 2 and self.basis != bases.BERNSTEIN and self.dofs is None:
-            # Serendipity too: its views read the full order-2 space's values.
-            return views._H1Order2Field
+            # Serendipity's views read the full order-2 space's values.
+            return (views._SerendipityField if self.basis == bases.SERENDIPITY
+                    else views._H1Order2Field)
         return self._tabled(views.of_order(views._H1TensorField, self.order,
                                            self.basis == bases.BERNSTEIN))
 
@@ -695,7 +718,9 @@ class L2(Space):
     up, or ``basis="gauss_legendre"`` at any order from 1, are on segments, quads,
     pixels, hexahedra and voxels (``tack.dataset.bases``): ``(order + 1)^d`` values
     a cell in node order, the first axis fastest, in the ``basis``
-    ``"gauss_lobatto"`` (the default), ``"equispaced"`` or ``"gauss_legendre"``
+    ``"gauss_lobatto"``, ``"equispaced"`` or ``"gauss_legendre"``
+    (by default equispaced where the mesh has triangles, tetrahedra or wedges, else
+    Gauss-Lobatto)
     (Lagrange polynomials on those nodes) or ``"bernstein"`` (the Bernstein
     polynomials' coefficients); and from order 2 on triangles, tetrahedra and
     wedges with ``basis="equispaced"`` or ``"bernstein"``: each cell's values at its lattice's nodes
@@ -716,6 +741,8 @@ class L2(Space):
     interpolated = True
     basis = None
     LAYOUTS = ("auto", "blocks", "cells")
+
+    _defaults = classmethod(_default_basis)
 
     @classmethod
     def _params(cls, order=1, basis="gauss_lobatto", layout="auto"):
@@ -777,11 +804,26 @@ class L2(Space):
                 and not any(bases.simplex_shape(g.shape) or bases.wedge_shape(g.shape)
                             for g in groups))
 
+    def _per_cell(self, what):
+        """The number of values every cell holds, for ``what`` (``indices``,
+        ``blocks``), which give a row a cell: cells holding different numbers (a
+        mixed mesh, an order per cell) are refused, with where to read them."""
+        n = self.topology.num_cells
+        offsets = np.asarray(arrays.to_host(self.offsets)).reshape(-1)
+        counts = np.unique(np.diff(offsets[:n + 1]))
+        if counts.size > 1:
+            raise ValueError(
+                f"{what} gives a row of values a cell, but these cells hold "
+                f"{', '.join(map(str, counts))} values: read space.offsets instead, cell "
+                "c's values at offsets[c]:offsets[c + 1]")
+        return self.size // max(n, 1)
+
     def indices(self):
         """A host ``(num_cells, values a cell)`` array: where each cell's value ``n`` is
-        in this space's values (blocks of one size only)."""
+        in this space's values. Every cell must hold the same number of values;
+        on a mixed mesh read ``offsets``."""
         n = self.topology.num_cells
-        per_cell = self.size // max(n, 1)
+        per_cell = self._per_cell("indices()")
         if self.layout == "cells":
             return np.arange(per_cell)[None, :] * n + np.arange(n)[:, None]
         offsets = np.asarray(arrays.to_host(self.offsets)).reshape(-1)
@@ -790,10 +832,11 @@ class L2(Space):
     def blocks(self, values):
         """``values`` (a host array of a field of this space) as ``(num_cells, values a
         cell, ...)``, each cell's in node order, whatever the layout. Blocks of one
-        size only (a tensor basis, or corner values of one shape)."""
+        size only (a tensor basis, or corner values of one shape); on a mixed mesh
+        read ``offsets``."""
         values = np.asarray(values)
         n = self.topology.num_cells
-        per_cell = self.size // max(n, 1)
+        per_cell = self._per_cell("blocks()")
         if self.layout == "cells":
             return np.moveaxis(values.reshape((per_cell, n, *values.shape[1:])), 0, 1)
         return values.reshape((n, per_cell, *values.shape[1:]))

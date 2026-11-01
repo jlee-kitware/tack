@@ -105,6 +105,21 @@ def test_warp_is_vtks(backend):
     assert set(out.fields) == set(data.fields) and out.topology is data.topology
 
 
+def test_warp_along_values_on_points(backend):
+    """Values on points are the order-1 geometry's space: a surface warped along its
+    own normals (``surface_normals`` keeps them as values on points, and warp
+    refused them) and scaled by a scalar given that way."""
+    grid = td.uniform_grid((3, 3, 3))
+    surface = td.surface_normals(td.extract_surface(grid, td.boundary_faces(grid)))
+    normals = surface.fields["normals"]
+    assert normals.space is td.Values(surface, "points")
+    x = surface.positions()
+    s = td.Field(td.Values(surface, "points"), tack.array((x[:, 2] + 1).astype(np.float32)))
+    out = td.warp(surface, "normals", 0.1, scale_by=s)
+    np.testing.assert_allclose(out.positions(),
+                               x + 0.1 * (x[:, 2:] + 1) * normals.values.numpy(), rtol=1e-6)
+
+
 @needs_vtk
 def test_transform_is_vtks(backend):
     grid = _grid()
@@ -296,3 +311,47 @@ def test_shrink_linearizes_quadratic_geometry_without_mutating_input(backend):
     np.testing.assert_allclose(corners.min(axis=0), [0.25] * 3)
     np.testing.assert_allclose(corners.max(axis=0), [0.75] * 3)
     np.testing.assert_array_equal(data.geometry.values.numpy(), original)
+
+
+@tack.func
+def _bulge_displacement(x):
+    return [0.1 * x[1] * x[1], -0.05 * x[0] * x[2], 0.2 * x[0] * x[1]]
+
+
+def test_warp_by_a_higher_order_displacement_curves_the_geometry(f64_backend):
+    """A displacement of higher order than the geometry (a finite-element solution, as
+    MFEM displaces its meshes) lifts the geometry into its space: the output's
+    geometry is curved, each node where its position plus the displacement puts
+    it; a field of lower order or another topology is refused."""
+    grid = td.uniform_grid((3, 3, 3), spacing=(0.5, 0.5, 0.5), dtype=tack.f64)
+    data = td.extract_cells(grid, np.arange(grid.num_cells))
+    space = td.H1(data, order=2)
+    vec = tack.vec3(tack.f64)
+    data.fields["d"] = td.interpolate(data, _bulge_displacement, space, dtype=vec)
+    moved = td.warp(data, "d")
+    assert moved.geometry.space is space
+    nodes = td.interpolate(data, _identity3, space, dtype=vec).values.numpy()
+    np.testing.assert_allclose(moved.geometry.values.numpy(),
+                               nodes + data.fields["d"].values.numpy(), atol=1e-15)
+    other = td.extract_cells(grid, np.arange(4))
+    other.fields["d"] = td.interpolate(other, _bulge_displacement, td.H1(other, order=2),
+                                       dtype=vec)
+    with pytest.raises(ValueError, match="no lower order"):
+        td.warp(data, other.fields["d"])
+
+
+def test_warp_by_a_2d_displacement(f64_backend):
+    """A 2-vector field (a 2D problem's displacement) moves x and y."""
+    grid = td.uniform_grid((4, 3), spacing=(0.5, 0.5), dtype=tack.f64)
+    d = np.stack([0.1 * np.arange(grid.num_points), -0.2 * np.ones(grid.num_points)], axis=1)
+    values = tack.empty((grid.num_points,), tack.vec(2, tack.f64))
+    tack.copyto(values, d)
+    grid.fields["d"] = td.Field(td.H1(grid), values)
+    moved = td.warp(grid, "d", scale=2.0)
+    np.testing.assert_allclose(moved.positions(), grid.positions() + 2.0 * np.c_[d, np.zeros(
+        grid.num_points)], atol=1e-15)
+
+
+@tack.func
+def _identity3(x):
+    return [x[0], x[1], x[2]]

@@ -190,6 +190,7 @@ CALLS = {
         (d.topology.faces().num_faces,), device=d.device))),
     "statistics": lambda d: td.statistics(d, "s"),
     "entropy": lambda d: td.entropy(d, "s"),
+    "integrate": lambda d: td.integrate(d, ["s", "v"]),
     "probe": lambda d: td.probe(d, _point(d.device)),
     "advect": lambda d: td.advect(d, "v", np.array([[0.5, 0.5, 0.5]], np.float32), 0.01, 3),
     "streamlines": lambda d: td.streamlines(d, "v", np.array([[0.5, 0.5, 0.5]], np.float32),
@@ -315,9 +316,10 @@ def test_a_dataset_refuses_parts_on_two_devices(second):
     data = _hexes(second)
     with pytest.raises(ValueError, match="two devices"):
         td.Field(td.H1(data), tack.zeros((data.num_points,)))
-    data.fields["elsewhere"] = td.Field.__new__(td.Field)
-    data.fields["elsewhere"].space, data.fields["elsewhere"].values = (
-        td.H1(data), tack.zeros((data.num_points,)))
+    elsewhere = td.Field.__new__(td.Field)        # past the Field's own check
+    elsewhere.space, elsewhere.values = td.H1(data), tack.zeros((data.num_points,))
+    elsewhere._unit = None
+    data.fields["elsewhere"] = elsewhere
     with pytest.raises(ValueError, match="two devices"):
         td.contour(data, "s", 3.0)
 

@@ -317,26 +317,39 @@ def _bend_at(p):
     return np.stack([x + 0.15 * y * y, y + 0.2 * x * x, z + 0.1 * x * y], axis=1)
 
 
-@pytest.mark.parametrize("cells", ["hexahedra", "quads"])
+@pytest.mark.parametrize("cells", ["hexahedra", "quads", "tetrahedra", "triangles", "wedges",
+                                   "tetrahedra-bernstein"])
 @pytest.mark.parametrize("geometry_order, order", [(2, 3), (2, 4), (3, 2), (3, 4)])
 def test_nodes_lie_on_a_curved_geometry_of_another_order(f64_backend, cells, geometry_order,
                                                         order):
     """A field's nodes on a curved geometry of another order are where the geometry
     puts them: on edges and faces its trace there, from the entity's own geometry
-    values in a frame its corners fix. The bend is of degree 2, so the curved
-    geometry is the bend of the straight cells exactly, and the field's nodes are
-    the bend of its nodes on the straight cells. They were refused."""
+    values in a frame its corners fix (a triangle face's by its corners' positions,
+    in the Lagrange or Bernstein basis of the geometry). The bend is of degree 2,
+    so the curved geometry is the bend of the straight cells exactly, and the
+    field's nodes are the bend of its nodes on the straight cells. They were
+    refused, on simplices and wedges until this round."""
     if cells == "hexahedra":
         grid = td.uniform_grid((4, 4, 3), spacing=(0.4, 0.5, 0.6), dtype=tack.f64)
         straight = _rotated(td.extract_cells(grid, np.arange(grid.num_cells)), seed=3)
-    else:
+    elif cells == "quads":
         grid = td.uniform_grid((4, 5), spacing=(0.4, 0.5), dtype=tack.f64)
         straight = td.extract_cells(grid, np.arange(grid.num_cells))
+    elif cells == "triangles":
+        straight = td.tetrahedralize(td.uniform_grid((4, 5), spacing=(0.4, 0.5),
+                                                     dtype=tack.f64))
+    else:
+        grid = td.uniform_grid((3, 4, 3), spacing=(0.4, 0.5, 0.6), dtype=tack.f64)
+        straight = _wedges(grid) if cells == "wedges" else td.tetrahedralize(grid)
     vec = tack.vec3(tack.f64)
+    if cells == "wedges":                               # _wedges' positions are f32
+        straight = td.DataSet(straight.topology,
+                              tack.array(straight.positions().astype(np.float64), vec))
     expected = _bend_at(td.interpolate(straight, _identity, td.H1(straight, order=order),
                                        dtype=vec).values.numpy())
     curved = td.DataSet(straight.topology, straight.geometry.values)
-    curved.geometry = td.interpolate(curved, _bend, td.H1(curved, order=geometry_order),
+    basis = {"basis": "bernstein"} if cells.endswith("bernstein") else {}
+    curved.geometry = td.interpolate(curved, _bend, td.H1(curved, order=geometry_order, **basis),
                                      dtype=vec)
     nodes = td.interpolate(curved, _identity, td.H1(curved, order=order), dtype=vec)
     np.testing.assert_allclose(nodes.values.numpy(), expected, atol=1e-12)
@@ -346,6 +359,28 @@ def test_nodes_lie_on_a_curved_geometry_of_another_order(f64_backend, cells, geo
                                        dtype=vec).values.numpy())
     nodes = td.interpolate(curved, _identity, td.L2(curved, order=order), dtype=vec)
     np.testing.assert_allclose(nodes.values.numpy(), expected, atol=1e-12)
+
+
+@pytest.mark.parametrize("cells", ["tetrahedra", "wedges"])
+def test_nodes_on_a_curved_geometry_are_the_same_bits_in_every_piece(f64_backend, cells):
+    """A triangle face's nodes on a curved geometry of another order come from the
+    face's own trace in its canonical frame (its corners by position), so a piece
+    holding some of the cells around a face places them to the same bits as the
+    whole: every node of each piece is one of the whole's, exactly."""
+    grid = td.uniform_grid((3, 4, 3), spacing=(0.4, 0.5, 0.6), dtype=tack.f64)
+    vec = tack.vec3(tack.f64)
+    straight = _wedges(grid) if cells == "wedges" else td.tetrahedralize(grid)
+    whole = td.DataSet(straight.topology,
+                       tack.array(straight.positions().astype(np.float64), vec))
+    whole.geometry = td.interpolate(whole, _bend, td.H1(whole, order=2), dtype=vec)
+    nodes = td.interpolate(whole, _identity, td.H1(whole, order=4), dtype=vec).values.numpy()
+    known = {tuple(row) for row in nodes.tolist()}
+    n = whole.num_cells
+    for cells_of in (np.arange(0, n, 2), np.arange(n // 3, n), np.arange(n - 1, -1, -3)):
+        piece = td.extract_cells(whole, cells_of)
+        assert piece.geometry.space.order == 2
+        mine = td.interpolate(piece, _identity, td.H1(piece, order=4), dtype=vec)
+        assert all(tuple(row) in known for row in mine.values.numpy().tolist())
 
 
 @pytest.mark.parametrize("cells, basis", [("hexahedra", "gauss_lobatto"),
@@ -698,3 +733,166 @@ def test_pieces_of_curved_cells_are_refused_where_they_would_come_out_straight(f
     for run in (td.ghost_cells, td.merge_pieces):
         with pytest.raises(NotImplementedError, match="come out straight"):
             run(pieces, fields=[])
+
+
+def _hexahedron_and_wedges():
+    """A hexahedron beside a hexahedron split into two wedges, every face between two
+    cells the same in both (a quad face between the hexahedron and the wedges)."""
+    grid = td.uniform_grid((3, 2, 2), spacing=(0.5, 0.5, 0.5), dtype=tack.f64)
+    h = td.extract_cells(grid, np.arange(2)).topology.connectivity.numpy().reshape(-1, 8)
+    second = h[1]
+    conn = [*h[0], *second[[0, 1, 3, 4, 5, 7]], *second[[1, 2, 3, 5, 6, 7]]]
+    types = tack.array(np.array([shapes.HEXAHEDRON, shapes.WEDGE, shapes.WEDGE], np.uint8))
+    offsets = tack.array(np.array([0, 8, 14, 20], np.int32))
+    return td.DataSet(td.UnstructuredTopology(types, offsets, tack.array(np.array(conn, np.int32)),
+                                              num_points=grid.num_points),
+                      tack.array(grid.positions(), tack.vec3(tack.f64)))
+
+
+@pytest.mark.parametrize("order", [2, 3])
+def test_mixed_meshes_subdivide_and_contour_as_one(f64_backend, order):
+    """A mesh of several families (MFEM's mixed Fichera corner) is subdivided a family
+    at a time and joined at the lattice points they share: a level-``order``
+    lattice has as many points as ``H1(order=order)`` has nodes, the contour of a
+    field of that order has no cracks between the families (its open edges all on
+    the box's boundary), and it holds the field's level at its points to the
+    sub-cells' linear error (a joined mesh's crossings are placed linearly: exact
+    crossings are for one family). Contours of high-order fields on mixed meshes
+    were refused."""
+    mixed = _hexahedron_and_wedges()
+    mixed.fields["u"] = td.interpolate(mixed, _quadratic, td.H1(mixed, order=order))
+    refined = td.subdivide(mixed, order)
+    assert refined.num_points == td.H1(mixed, order=order).size
+    assert refined.num_cells == order ** 3 * 3
+    surface = td.contour(mixed, "u", 1.1)
+    assert surface.num_cells > 0
+    conn = surface.topology.connectivity.numpy()
+    offsets = surface.topology.offsets.numpy()
+    count = {}
+    for c in range(surface.num_cells):
+        ring = conn[offsets[c]:offsets[c + 1]]
+        for a, b in zip(ring, np.roll(ring, -1), strict=True):
+            key = (min(a, b), max(a, b))
+            count[key] = count.get(key, 0) + 1
+    x = surface.geometry.values.numpy()
+    box = np.array([[0.0, 0.0, 0.0], [1.0, 0.5, 0.5]])
+    for (a, b), n in count.items():
+        if n == 1:
+            on = np.isclose(x[[a, b]], box[0]) | np.isclose(x[[a, b]], box[1])
+            assert (on[0] & on[1]).any(), (x[a], x[b])
+    # A quadratic's error along a sub-edge h = 0.5 / order: at most h^2 |u''| / 8.
+    np.testing.assert_allclose(_quadratic_at(x), 1.1, atol=(0.5 / order) ** 2 * 4 / 8)
+
+
+@pytest.mark.parametrize("cells", ["hexahedra", "tetrahedra"])
+def test_jumps_of_a_high_order_dg_field_are_at_the_face_center(f64_backend, cells):
+    """``jump`` evaluates each side's own basis at the face's center: an L2 field of
+    order 2 that is (1 + c) x^2 in cell c jumps by (c1 - c0) x^2 there. It took the
+    face's corner values (``traces``) and their linear mean, wrong above order 1."""
+    grid = td.uniform_grid((3, 3, 3), spacing=(0.5, 0.4, 0.6), dtype=tack.f64)
+    data = (td.extract_cells(grid, np.arange(grid.num_cells)) if cells == "hexahedra"
+            else td.tetrahedralize(grid))
+    space = td.L2(data, order=2, basis="equispaced", layout="blocks")
+    nodes = td.interpolate(data, _identity, space, dtype=tack.vec3(tack.f64)).values.numpy()
+    offsets = space.offsets.numpy()
+    cell = np.repeat(np.arange(data.num_cells), np.diff(offsets))
+    data.fields["u"] = td.Field(space, tack.array((1.0 + cell) * nodes[:, 0] ** 2))
+    jumps = td.jump(data, "u").values.numpy()
+    sides = data.topology.faces().sides.numpy()
+    x = td.face_centers(data).values.numpy()[:, 0]
+    inner = sides[:, 2] >= 0
+    expected = np.where(inner, (sides[:, 2] - sides[:, 0]) * x ** 2, 0.0)
+    np.testing.assert_allclose(jumps, expected, atol=1e-12)
+
+
+@pytest.mark.parametrize("layout", ["blocks", "cells"])
+def test_a_curved_l2_geometry_is_curved(f64_backend, layout):
+    """A curved geometry in L2 (each cell its own nodes, as a mesh displaced by a DG
+    field or a periodic mesh of order 2 keeps it) maps, bounds and inverts its cells
+    as the same geometry in H1 does: probes and cell centres agree. It was read as
+    order-1 corner values, each cell's first values, and probes missed."""
+    grid = td.uniform_grid((3, 3, 3), spacing=(0.5, 0.5, 0.5), dtype=tack.f64)
+    curved = _rotated(td.extract_cells(grid, np.arange(8)), seed=2)
+    vec = tack.vec3(tack.f64)
+    curved.geometry = td.interpolate(curved, _bend, td.H1(curved, order=2), dtype=vec)
+    curved.fields["u"] = td.interpolate(curved, _quadratic, td.H1(curved, order=2))
+    space = td.L2(curved, order=2, layout=layout)
+    broken = td.DataSet(curved.topology, td.project(curved, curved.geometry, space),
+                        fields={"u": curved.fields["u"]})
+    centers = td.cell_centers(curved).values.numpy()
+    np.testing.assert_allclose(td.cell_centers(broken).values.numpy(), centers, atol=1e-13)
+    points = curved.geometry.values.numpy()
+    a, b = td.probe(curved, points), td.probe(broken, points)
+    assert b.fields["valid"].values.numpy().all()
+    np.testing.assert_allclose(b.fields["u"].values.numpy(), a.fields["u"].values.numpy(),
+                               atol=1e-9)
+
+
+@pytest.mark.parametrize("cells, order", [("tetrahedra", 2), ("tetrahedra", 3), ("wedges", 2),
+                                          ("wedges", 3)])
+def test_a_curved_l2_geometry_on_simplices_and_wedges(f64_backend, cells, order):
+    """A curved ``L2`` geometry on tetrahedra and wedges maps, measures and inverts
+    its cells as its ``H1`` twin: centres, measures and probes agree. It was
+    refused (MFEM's ports)."""
+    grid = td.uniform_grid((3, 3, 3), spacing=(0.5, 0.5, 0.5), dtype=tack.f64)
+    data = td.tetrahedralize(grid) if cells == "tetrahedra" else _wedges(grid)
+    vec = tack.vec3(tack.f64)
+    data.geometry = td.interpolate(data, _bend, td.H1(data, order=order), dtype=vec)
+    data.fields["u"] = td.interpolate(data, _quadratic, td.H1(data, order=order))
+    broken = td.DataSet(data.topology,
+                        td.project(data, data.geometry, td.L2(data, order=order)),
+                        fields={"u": data.fields["u"]})
+    np.testing.assert_allclose(td.cell_centers(broken).values.numpy(),
+                               td.cell_centers(data).values.numpy(), atol=1e-13)
+    np.testing.assert_allclose(td.cell_geometry(broken).measure.values.numpy(),
+                               td.cell_geometry(data).measure.values.numpy(), rtol=1e-12)
+    points = td.cell_centers(data).values.numpy()
+    a, b = td.probe(data, points), td.probe(broken, points)
+    assert b.fields["valid"].values.numpy().all()
+    np.testing.assert_allclose(b.fields["u"].values.numpy(), a.fields["u"].values.numpy(),
+                               atol=1e-12)
+
+
+@pytest.mark.parametrize("order", [1, 2])
+def test_subdividing_an_l2_geometry_keeps_its_cells_apart(f64_backend, order):
+    """Cells of an L2 geometry share points in the topology but need not meet in space
+    (a periodic mesh's seam, a mesh displaced by a DG field): ``subdivide`` gives each
+    its own lattice points. Here each cell is moved by its own offset, and every
+    sub-cell's corners and values are the unmoved ones' plus it. Shared points took
+    one cell's position, stretching the others' sub-cells across the mesh. And
+    ``extract_edges`` draws each cell's own edges (it refused an L2 geometry)."""
+    grid = td.uniform_grid((3, 3, 3), spacing=(0.5, 0.5, 0.5), dtype=tack.f64)
+    curved = _rotated(td.extract_cells(grid, np.arange(8)), seed=3)
+    vec = tack.vec3(tack.f64)
+    if order > 1:
+        curved.geometry = td.interpolate(curved, _bend, td.H1(curved, order=order), dtype=vec)
+    curved.fields["u"] = td.interpolate(curved, _quadratic, td.H1(curved, order=2))
+    space = td.L2(curved, order=order, layout="blocks")
+    values = td.project(curved, curved.geometry, space).values.numpy()
+    cell = np.repeat(np.arange(curved.num_cells), np.diff(space.offsets.numpy()))
+    shift = np.c_[10.0 * cell, np.zeros((len(cell), 2))]
+    moved = tack.empty((len(values),), vec)
+    tack.copyto(moved, values + shift)
+    apart = td.DataSet(curved.topology, td.Field(space, moved),
+                       fields={"u": curved.fields["u"]})
+    a, b = td.subdivide(curved, 3), td.subdivide(apart, 3)
+    assert b.num_cells == a.num_cells
+    corners_a = a.topology.connectivity.numpy().reshape(-1, 8)
+    corners_b = b.topology.connectivity.numpy().reshape(-1, 8)
+    parent = np.repeat(np.arange(curved.num_cells), 27)
+    x_a = a.geometry.values.numpy()[corners_a]
+    x_b = b.geometry.values.numpy()[corners_b]
+    x_a[..., 0] += 10.0 * parent[:, None]
+    np.testing.assert_allclose(x_b, x_a, atol=1e-12)
+    np.testing.assert_allclose(b.fields["u"].values.numpy()[corners_b],
+                               a.fields["u"].values.numpy()[corners_a], atol=1e-12)
+    # Edges: each cell's own, 12 of them in 3 segments along its map, every point
+    # on the H1 twin's edges once moved back.
+    edges = td.extract_edges(apart, subdivision=3)
+    assert edges.num_cells == curved.num_cells * 12 * 3
+    x = edges.geometry.values.numpy().copy()
+    x[:, 0] -= 10.0 * np.repeat(np.arange(curved.num_cells), 12 * 4)
+    twin = td.extract_edges(curved if order > 1 else td.subdivide(curved, 3, fields=[]),
+                            subdivision=3).geometry.values.numpy()
+    nearest = np.abs(x[:, None, :] - twin[None, :, :]).max(axis=2).min(axis=1)
+    assert nearest.max() < 1e-12

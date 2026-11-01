@@ -96,11 +96,18 @@ def _collection(fes):
     # (an H1 basis type), "H1Pos_3D_P3" (Bernstein), ...
     name = fes.FEColl().Name()
     family = name.split("_", 1)[0].split("@", 1)[0]
-    family = "H1" if family == "H1Pos" else family
+    family = "H1" if family in ("H1Pos", *_LEGACY) else family
     if family not in ("H1", "L2"):
         raise NotImplementedError(f"MFEM collection {name} has no space here yet")
     return family, fes.GetMaxElementOrder() if hasattr(fes, "GetMaxElementOrder") \
         else fes.GetOrder(0)
+
+
+#: MFEM's older collections, by name, as the meshes of its data directory still use
+#: them for their nodes (``escher-p3.mesh`` is "Cubic"): Lagrange spaces, the
+#: positive one Bernstein, as Tack's basis.
+_LEGACY = {"Linear": "gauss_lobatto", "Quadratic": "gauss_lobatto", "Cubic": "equispaced",
+           "QuadraticPos": "bernstein"}
 
 
 #: An MFEM collection's basis type, by its name, as Tack's basis: H1's default is
@@ -110,6 +117,8 @@ def _collection(fes):
 #: basis: its function is evaluated at Tack's nodes.
 def _nodes_of(fes):
     name = fes.FEColl().Name()
+    if name in _LEGACY:
+        return _LEGACY[name]
     if name.startswith("H1_"):
         return "gauss_lobatto"
     if name.startswith("H1@U_"):
@@ -462,13 +471,14 @@ def _supported():
     return get_backend().supported_dtypes
 
 
-def mfem_field(data, mesh, gf, dtype=tack.f32, dofs=None):
+def mfem_field(data, mesh, gf, dtype=None, dofs=None):
     """``gf``, an MFEM grid function on ``mesh``, as a field of ``data`` (the dataset
     ``mfem_to_dataset`` made from ``mesh``). ``dofs="table"`` keeps an ``H1`` field
     of order 2 and up numbered as MFEM numbers it: its values as they are, in a
     space numbered by MFEM's element-to-DOF table (``H1(..., dofs=table)``), on the
     bases whose values are copied; by default they are permuted into Tack's
     numbering by entity."""
+    dtype = tack.get_default_float() if dtype is None else dtype
     from tack.dataset import H1, L2, Constant, Field
 
     if dofs not in (None, "table"):
@@ -495,7 +505,7 @@ def mfem_field(data, mesh, gf, dtype=tack.f32, dofs=None):
     raise NotImplementedError(f"MFEM {family} order {order} has no space here yet")
 
 
-def mfem_to_dataset(mesh, fields=None, dtype=tack.f32, id_dtype=None, dofs=None):
+def mfem_to_dataset(mesh, fields=None, dtype=None, id_dtype=None, dofs=None):
     """A ``tack.dataset.DataSet`` of an MFEM mesh and named grid functions on it.
 
     The geometry is the vertex positions (z = 0 for a 2D mesh), or for a curved
@@ -504,15 +514,19 @@ def mfem_to_dataset(mesh, fields=None, dtype=tack.f32, id_dtype=None, dofs=None)
     (``tack.dataset.ids``). ``dofs="table"`` numbers a curved geometry and the
     ``H1`` fields of order 2 and up as MFEM does (``mfem_field``).
     """
-    from tack.dataset import Constant, DataSet, Field
+    dtype = tack.get_default_float() if dtype is None else dtype
+    from tack.dataset import L2, Constant, DataSet, Field
 
     if dofs not in (None, "table"):
         raise ValueError(f"dofs is None or 'table', not {dofs!r}")
     nodes = mesh.GetNodes()
-    curved = nodes is not None and _collection(nodes.FESpace())[1] > 1
-    order = _collection(nodes.FESpace())[1] if curved else 1
+    # A periodic mesh keeps its nodes per element (L2), so the two sides of a
+    # periodic seam can differ: an L2 geometry, on the identified vertices.
+    periodic = nodes is not None and _collection(nodes.FESpace())[0] == "L2"
+    curved = nodes is not None and not periodic and _collection(nodes.FESpace())[1] > 1
+    order = _collection(nodes.FESpace())[1] if curved or periodic else 1
     topology = _topology(mesh, id_dtype)
-    if curved:
+    if curved or periodic:
         positions = np.asarray(mesh.GetVertexArray(), dtype=float).reshape(
             mesh.GetNV(), mesh.SpaceDimension())
     elif nodes is not None:
@@ -535,6 +549,17 @@ def mfem_to_dataset(mesh, fields=None, dtype=tack.f32, id_dtype=None, dofs=None)
             space, values = _quadratic_values(data, mesh, nodes)
         else:
             space, values = _tensor_values(data, mesh, nodes, "H1", order)
+        if values.shape[1] < 3:
+            # A 2D mesh's nodes have two components; positions are three.
+            values = np.hstack([values, np.zeros((values.shape[0], 3 - values.shape[1]))])
+        data.geometry = Field(space, _field_values(values, dtype))
+    elif periodic:
+        if order == 1:
+            space, values = L2(data), _corner_values(mesh, nodes)
+        else:
+            space, values = _tensor_values(data, mesh, nodes, "L2", order)
+        if values.shape[1] < 3:
+            values = np.hstack([values, np.zeros((values.shape[0], 3 - values.shape[1]))])
         data.geometry = Field(space, _field_values(values, dtype))
     attributes = np.array([mesh.GetAttribute(e) for e in range(mesh.GetNE())], np.int32)
     data.fields["attribute"] = Field(Constant(data), _field_values(attributes, tack.i32))

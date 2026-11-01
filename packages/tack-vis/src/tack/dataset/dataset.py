@@ -27,6 +27,8 @@ such space among ``args``, and the kernel runs once per subgroup, each
 launch specialized to its keys.
 """
 
+from collections.abc import MutableMapping
+
 import numpy as np
 
 import tack
@@ -160,6 +162,28 @@ def as_origin(origin):
     return tuple(float(v) for v in values)
 
 
+#: How many times farther from zero than they are wide positions must be for an
+#: origin: below it, single precision relative to zero keeps 6e-6 of their width.
+_FAR = 100.0
+
+
+def automatic_origin(lower, upper):
+    """The origin positions in the box ``lower``-``upper`` take when none is given,
+    or None: the lower corner rounded down to whole units where the box is more
+    than ``_FAR`` (100) times farther from zero than it is wide (a survey's
+    eastings and northings, a terrain far from its datum), so single-precision
+    values relative to it keep their precision; none otherwise, or for no box."""
+    lower = np.asarray(lower, np.float64)
+    upper = np.asarray(upper, np.float64)
+    if not (np.all(np.isfinite(lower)) and np.all(np.isfinite(upper))
+            and np.all(lower <= upper)):
+        return None
+    reach = max(np.abs(lower).max(), np.abs(upper).max())
+    if reach <= _FAR * (upper - lower).max():
+        return None
+    return tuple(float(v) for v in np.floor(lower))
+
+
 def same_origin(what, datasets):
     """The origin every one of ``datasets`` has, or ``ValueError`` naming ``what``
     if two differ: positions compared or moved between datasets must be relative
@@ -227,6 +251,30 @@ def _geometry_parts(data, group, kind):
             raise NotImplementedError(
                 f"the {kind} of an L2 geometry have no positions of their own: each cell "
                 "around an edge has its own, and edges have no sides to choose from")
+        if geometry.space.tensor:
+            # Curved, each cell its own nodes (a mesh displaced by a DG field, a
+            # periodic mesh of order 2 or more).
+            space = geometry.space
+            bernstein = space.basis == bases.BERNSTEIN
+            if bases.simplex_shape(group.shape):
+                mixins, attributes = _space_parts(geometry, group, views.of_simplex_order(
+                    views._L2SimplexGeometry, space.order, group.shape.DIMENSION, bernstein))
+                return [*mixins, views._SimplexNewton], attributes
+            if bases.wedge_shape(group.shape):
+                mixins, attributes = _space_parts(geometry, group, views.of_wedge_order(
+                    views._L2WedgeGeometry, space.order, bernstein))
+                return [*mixins, views._WedgeNewton], attributes
+            if not bases.tensor_shape(group.shape):
+                raise NotImplementedError(
+                    f"an L2 geometry of order {space.order} on {group.shape.__name__} "
+                    "cells: curved L2 geometries are on segments, quads, hexahedra, "
+                    "triangles, tetrahedra and wedges")
+            mixin = (views._L2CellsTensorGeometry if space.layout == "cells"
+                     else views._L2TensorGeometry)
+            mixins, attributes = _space_parts(
+                geometry, group, views.of_order(mixin, space.order,
+                                                space.basis == bases.BERNSTEIN))
+            return [*mixins, views._TensorNewton], attributes
         mixins, attributes = _space_parts(geometry, group, views._L2Geometry)
         if group.shape not in (shapes.Polyhedron, shapes.Polygon, shapes.PolyLine):
             mixins = [*mixins, views._CornerBox, views._CurvedNewton]
@@ -325,7 +373,7 @@ def _copy_edge_traces(cells, edge_nodes, view_of, q, edges):
 
 
 @tack.kernel
-def _copy_face_traces(cells, face_nodes, q, faces):
+def _copy_face_traces(cells, face_nodes, view_of, q, faces):
     # Each of the cells' quad faces' geometry values, in the face's frame
     # (views._square_frame's), as _copy_edge_traces copies edges'.
     for c in cells:
@@ -349,15 +397,40 @@ def _copy_face_traces(cells, face_nodes, q, faces):
                 for k in range(q * q):
                     fa = ax * p + (k % q) * (bx - ax) + (k // q) * (dx - ax)
                     fb = ay * p + (k % q) * (by - ay) + (k // q) * (dy - ay)
-                    faces[base + k] = cells.get(cells.dof_index(c, face_nodes[f * q * q + fa
-                                                                               + q * fb]))
+                    faces[base + k] = cells.get(cells.dof_index(
+                        c, view_of[face_nodes[f * q * q + fa + q * fb]]))
+
+
+@tack.kernel
+def _copy_triangle_traces(cells, face_nodes, stride, view_of, lattice, q, faces):
+    # Each of the cells' triangle faces' geometry values in the face's canonical
+    # frame (its corners by position, views._sorted_corners): value (i, j) is the node i
+    # steps toward the second corner and j toward the third, at faces[base + i +
+    # q * j]. lattice[a + q * b]: face node (a, b)'s place in the face's row.
+    for c in cells:
+        for f in range(cells.NUM_FACES):
+            if cells.face_num_points(f) == 3:
+                s0, s1, s2 = views._sorted_corners(cells.corner_position(c, cells.face_corner(f, 0)),
+                                             cells.corner_position(c, cells.face_corner(f, 1)),
+                                             cells.corner_position(c, cells.face_corner(f, 2)))
+                g = q - 1
+                base = cells.face_id(c, f) * q * q
+                for j in range(q):
+                    for i in range(q - j):
+                        # The node's steps toward the face's own corners 1 and 2.
+                        a = i if s1 == 1 else (j if s2 == 1 else g - i - j)
+                        b = i if s1 == 2 else (j if s2 == 2 else g - i - j)
+                        faces[base + i + q * j] = cells.get(cells.dof_index(
+                            c, view_of[face_nodes[f * stride + lattice[a + q * b]]]))
 
 
 def _entity_traces(data, faces=True):
-    """A curved geometry's values on every edge and (``faces``, tensor cells only) quad
-    face, ``q`` a side (``q - 1`` its order), for ``views._CurvedNodePosition`` and
+    """A curved geometry's values on every edge and (``faces``) face, ``q`` a side
+    (``q - 1`` its order), for ``views._CurvedNodePosition`` and
     ``extract_edges``' subdivided edges: ``(edges, faces, attributes)``, the
-    attributes its 1D basis."""
+    attributes its 1D basis. A quad face's ``q * q`` values are in its square
+    frame, a triangle face's in its canonical one (``_copy_triangle_traces``),
+    both at ``q * q`` a face."""
     from tack.dataset import bases
 
     geometry = data.geometry
@@ -371,9 +444,10 @@ def _entity_traces(data, faces=True):
     for group in topology.groups():
         if group.count and group.shape.DIMENSION > 1:
             shape = group.shape
+            edge_rows, face_rows = bases.entity_nodes(shape, space.order)
             edge_nodes, face_nodes = (
                 tack.array(x.reshape(-1) if x.size else np.zeros(1, np.int32))
-                for x in bases.entity_nodes(shape, space.order))
+                for x in (edge_rows, face_rows))
             tensor = not (bases.simplex_shape(shape) or bases.wedge_shape(shape))
             view_of = tack.array(
                 np.arange(q ** shape.DIMENSION, dtype=np.int32) if tensor else
@@ -381,8 +455,17 @@ def _entity_traces(data, faces=True):
                            np.int32))
             cells = data.domain_view("cells", group)
             _copy_edge_traces(cells, edge_nodes, view_of, q, edges)
-            if solid and shape.DIMENSION == 3 and tensor:
-                _copy_face_traces(cells, face_nodes, q, faces)
+            if solid and shape.DIMENSION == 3:
+                if tensor or bases.wedge_shape(shape):
+                    _copy_face_traces(cells, face_nodes, view_of, q, faces)
+                if not tensor:
+                    # Triangle faces, in their canonical frames.
+                    lattice = np.zeros(q * q, np.int32)
+                    for n, (a, b) in enumerate(bases.simplex_lattice(shapes.Triangle,
+                                                                     space.order)):
+                        lattice[a + q * b] = n
+                    _copy_triangle_traces(cells, face_nodes, int(face_rows.shape[1]),
+                                          view_of, tack.array(lattice), q, faces)
     family = space.basis or "gauss_lobatto"
     dtype = _basis_type(geometry)
     tables = []
@@ -408,6 +491,206 @@ def _space_nodes(space, geometry):
         tack.copyto(out, values.astype(dtype.numpy_dtype))
         cache[key] = out
     return cache[key]
+
+
+def _split_key(key):
+    """A field's key as ``(name, selector)``: a name alone, or ``(name, space)``,
+    the space a ``Space`` or a kind of space (``H1``, ``Constant``, ...)."""
+    if isinstance(key, str):
+        return key, None
+    if (isinstance(key, tuple) and len(key) == 2 and isinstance(key[0], str)
+            and (isinstance(key[1], Space)
+                 or (isinstance(key[1], type) and issubclass(key[1], Space)))):
+        return key
+    raise TypeError(f"a field is named by a string, or (name, space) with a space or "
+                    f"a kind of space, not {key!r}")
+
+
+def _space_key(space, arrays_alike=False):
+    """What makes two spaces the same space: their kind and parameters, an array
+    parameter (an order per cell) by identity, as ``Space`` interns them, or as
+    alike when ``arrays_alike`` (a space carried to another topology copies its
+    arrays)."""
+    return type(space), tuple(sorted(
+        (k, ("array", None if arrays_alike else id(v)) if hasattr(v, "shape") else v)
+        for k, v in space.params.items()))
+
+
+def _same_space(a, b):
+    """Within a topology, spaces are interned, so the same space is the same object;
+    across topologies (a field carried by a filter), the same kind and parameters."""
+    if a is b or a.topology is b.topology:
+        return a is b
+    return _space_key(a, True) == _space_key(b, True)
+
+
+def _fits(space, selector):
+    """Whether a field in ``space`` is one ``selector`` asks for."""
+    if selector is None:
+        return True
+    if isinstance(selector, type):
+        return isinstance(space, selector)
+    return _same_space(space, selector)
+
+
+def field_name(key):
+    """The name in a field's key (a name, or ``(name, space)``)."""
+    return _split_key(key)[0]
+
+
+def field_label(key):
+    """A field's key as a string, alike on every rank: its name, or ``"name in
+    space"``, for messages between pieces, which carry no spaces."""
+    name, selector = _split_key(key)
+    if selector is None:
+        return name
+    return f"{name} in {selector.__name__ if isinstance(selector, type) else repr(selector)}"
+
+
+def is_field_key(value):
+    """Whether ``value`` names one field (a name, or ``(name, space)``), as an
+    algorithm's field argument may, rather than being a list of them."""
+    try:
+        _split_key(value)
+    except TypeError:
+        return False
+    return True
+
+
+class Fields(MutableMapping):
+    """``data.fields``: a dataset's fields by name and space. Fields may share a
+    name in different spaces -- a point array and a cell array called ``"p"``, as
+    VTK has them -- so ``fields["p", td.Constant]`` (or the space itself) picks one,
+    and ``fields["p"]`` is the one ``"p"`` there is, refused where there are
+    several, never a guess.
+
+    Its keys are the names, but ``(name, space)`` for a name fields share, so each
+    key is a lookup, ``dict(fields)`` loses nothing, and every key is a key
+    ``DataSet(fields=...)`` takes. ``fields["p"] = f`` makes ``f`` the one field
+    called ``"p"``, as a dict would; ``fields["p", space] = f`` puts it beside the
+    fields of that name in other spaces, replacing the one in its own (spaces
+    compared by kind and parameters, so one carried to another topology still
+    matches). ``named(name)`` gives every field of a name, ``entries()`` each field
+    with its name."""
+
+    def __init__(self, topology, fields=None):
+        self._topology = topology
+        self._entries = []              # [name, field], in the order put in
+        if fields is None:
+            return
+        # Every entry of a mapping is kept, by its name and its field's own space (a
+        # filter that moved a field to another space keeps its key); two of a name
+        # in one space would be one, so they are refused.
+        for key, field in (fields.items() if hasattr(fields, "items") else fields):
+            name = self._checked(_split_key(key)[0], field)
+            if any(n == name and _same_space(f.space, field.space)
+                   for n, f in self._entries):
+                raise ValueError(
+                    f"two fields {name!r} would be in {field.space!r} (a filter that puts "
+                    f"fields in one space, as probe puts them at the points): choose one "
+                    f"with fields=[({name!r}, td.H1)] or ({name!r}, td.Constant), or "
+                    "rename one")
+            self._entries.append([name, field])
+
+    def _checked(self, name, field):
+        if not isinstance(field, Field):
+            raise TypeError(f"field {name!r} is a tack.dataset.Field, not "
+                            f"{type(field).__name__}")
+        if field.space.topology is not self._topology:
+            raise ValueError(f"field {name!r} is on another topology")
+        return name
+
+    def _matches(self, key):
+        name, selector = _split_key(key)
+        return [i for i, (n, f) in enumerate(self._entries)
+                if n == name and _fits(f.space, selector)]
+
+    def _index(self, key):
+        found = self._matches(key)
+        if not found:
+            raise KeyError(f"no field {key!r}: the dataset has {self._listed()}")
+        if len(found) > 1:
+            spaces = " and ".join(repr(self._entries[i][1].space) for i in found)
+            raise KeyError(f"{key!r} names {len(found)} fields, in {spaces}: give the "
+                           f"space, as fields[{_split_key(key)[0]!r}, td.Constant] or "
+                           "the space itself")
+        return found[0]
+
+    def _listed(self):
+        return ", ".join(map(repr, self)) or "none"
+
+    def __getitem__(self, key):
+        return self._entries[self._index(key)][1]
+
+    def __setitem__(self, key, field):
+        name, selector = _split_key(key)
+        self._checked(name, field)
+        if not _fits(field.space, selector):
+            raise ValueError(f"field {key!r} is in {field.space!r}")
+        if selector is None:
+            # A name alone: this field is the one of that name, where the first was.
+            at = [i for i, (n, _) in enumerate(self._entries) if n == name]
+            if at:
+                self._entries[at[0]] = [name, field]
+                for i in reversed(at[1:]):
+                    del self._entries[i]
+                return
+        for entry in self._entries:
+            if entry[0] == name and _same_space(entry[1].space, field.space):
+                entry[1] = field
+                return
+        self._entries.append([name, field])
+
+    def __delitem__(self, key):
+        del self._entries[self._index(key)]
+
+    def __contains__(self, key):
+        return bool(self._matches(key))
+
+    def __iter__(self):
+        counts = {}
+        for name, _ in self._entries:
+            counts[name] = counts.get(name, 0) + 1
+        return iter([name if counts[name] == 1 else (name, field.space)
+                     for name, field in self._entries])
+
+    def __len__(self):
+        return len(self._entries)
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+    _missing = object()
+
+    def pop(self, key, default=_missing):
+        if key not in self and default is not self._missing:
+            return default
+        field = self[key]
+        del self[key]
+        return field
+
+    def key_of(self, key):
+        """The key this mapping lists for the field ``key`` names: ``"p"`` for
+        ``("p", td.H1)`` where that is the one ``"p"``, the space itself where a
+        name is shared, so a copy of the mapping takes a new value for it."""
+        index = self._index(key)
+        return next(k for i, k in enumerate(self) if i == index)
+
+    def _all(self, key):
+        """Every field ``key`` selects (a name every field of that name), refusing none."""
+        return [self._entries[i][1] for i in self._matches(key)]
+
+    def named(self, name):
+        """Every field called ``name``, in the order they were put in."""
+        return [field for n, field in self._entries if n == name]
+
+    def entries(self):
+        """Each field with its name, ``(name, field)``: a name more than once where
+        fields share it (what a writer that names arrays by kind wants)."""
+        return [(name, field) for name, field in self._entries]
+
+    def __repr__(self):
+        return f"Fields({{{', '.join(f'{k!r}: {f.space!r}' for k, f in self.items())}}})"
 
 
 class DataSet:
@@ -440,18 +723,16 @@ class DataSet:
     keep what they need (``tack.dataset.temporal``)."""
 
     @on_inputs_device
-    def __init__(self, topology, geometry, fields=None, sets=None, dtype=tack.f32,
+    def __init__(self, topology, geometry, fields=None, sets=None, dtype=None,
                  ghosts=None, global_ids=None, origin=None, unit=None, time=None,
                  time_unit=None):
+        dtype = tack.get_default_float() if dtype is None else dtype
         self.topology = topology
         self._geometry = _as_geometry(geometry, topology, dtype, unit)
         self.origin = origin
         self.time = time
         self.time_unit = time_unit
-        self.fields = dict(fields or {})
-        for name, field in self.fields.items():
-            if field.space.topology is not topology:
-                raise ValueError(f"field {name!r} is on another topology")
+        self.fields = fields
         self.sets = sets
         # Set by a filter that dropped its input's ghost marks (ghosts.drop_marks).
         self._ghosts_lost = False
@@ -468,7 +749,7 @@ class DataSet:
         held = [parts.get("topology")]
         if parts.get("_geometry") is not None:
             held.append(parts["_geometry"].values)
-        held.extend(field.values for field in parts.get("fields", {}).values())
+        held.extend(field.values for field in parts.get("_fields", {}).values())
         held.extend(s.ids for s in (parts.get("_sets") or {}).values())
         held.append(parts.get("_ghosts"))
         held.append(parts.get("_global_ids"))
@@ -520,6 +801,16 @@ class DataSet:
     @sets.setter
     def sets(self, sets):
         self._sets = Sets(self.topology, sets)
+
+    @property
+    def fields(self):
+        """Its fields by name and space (``Fields``): ``fields["p"]``, or
+        ``fields["p", td.Constant]`` where a point and a cell field share a name."""
+        return self._fields
+
+    @fields.setter
+    def fields(self, fields):
+        self._fields = Fields(self.topology, fields)
 
     def _kind(self, domain):
         """The entities ``domain`` -- a domain or a set's name -- iterates over."""
@@ -773,9 +1064,9 @@ class DataSet:
         """``node_views``' edges, quad faces and interiors of an ``H1`` space of order 3
         or more. An edge's and a face's nodes are placed on its straight geometry, are
         the geometry's own values when it has the space's layout, or the geometry's
-        trace there when it is curved and of another order (``_entity_traces``; on
-        hexahedra, quads and their kin, refused on curved simplices and wedges for
-        now)."""
+        trace there when it is curved and of another order (``_entity_traces``; a
+        triangle face's evaluated in its canonical frame,
+        ``views._CurvedTriangleNodePosition``)."""
         geometry = self.geometry
         face_dofs, cell_dofs, _ = space._layout()
         points = _space_nodes(space, geometry)
@@ -784,13 +1075,12 @@ class DataSet:
         if same:
             where = views._GeometryAtDof
         elif geometry.space.order > 1:
-            if any(g.count and (bases.simplex_shape(g.shape) or bases.wedge_shape(g.shape)
-                                or not bases.has_bases(g.shape))
-                   for g in self.topology.groups()):
+            if any(g.count and not bases.has_bases(g.shape) for g in self.topology.groups()):
                 raise NotImplementedError(
                     f"the nodes of {space!r} on a curved geometry of another order "
-                    f"({geometry.space!r}) on cells other than tensor ones: interpolate "
-                    "into the geometry's own space, or make the geometry straight")
+                    f"({geometry.space!r}) on cells without a basis (pyramids): "
+                    "interpolate into the geometry's own space, or make the geometry "
+                    "straight")
             edges, faces, basis = _entity_traces(self)
             where = views._CurvedNodePosition
             edge_trace, face_trace = dict(basis, trace=edges), dict(basis, trace=faces)
@@ -812,10 +1102,12 @@ class DataSet:
                                          where),
                         node_face_dofs=face_dofs, node_points=points, **face_trace))
                 elif group.count and group.shape is shapes.Triangle and space.order > 2:
+                    curved = where is views._CurvedNodePosition
                     out.append(self.domain_view(
                         "faces", group, (views.of_node_order(views._SimplexFaceNodes, space.order),
-                                         where),
-                        node_face_dofs=face_dofs, node_points=points))
+                                         views._CurvedTriangleNodePosition if curved else where),
+                        node_face_dofs=face_dofs, node_points=points,
+                        **(face_trace if curved else {})))
         for group in topology.groups():
             if not group.count:
                 continue
@@ -1156,18 +1448,19 @@ def grid_topology(dims, id_dtype=None, device=None, offset=None):
     return StructuredTopology(axes, id_dtype=id_dtype, device=device, offset=offset)
 
 
-def rectilinear_grid(x, y=(0.0,), z=(0.0,), dtype=tack.f32, device=None, unit=None):
+def rectilinear_grid(x, y=(0.0,), z=(0.0,), dtype=None, device=None, unit=None):
     """A dataset of the grid whose lines run through ``x``, ``y`` and ``z``; see
     ``grid_topology`` for axes of one point or none. It is on ``device``, by
     default that of axes given as device arrays, else the default device.
     ``unit`` is the spatial unit (``DataSet.unit``)."""
+    dtype = tack.get_default_float() if dtype is None else dtype
     coordinates = CartesianProduct(x, y, z, dtype=dtype, device=device)
     return DataSet(grid_topology(coordinates.dims, device=coordinates.device), coordinates,
                    unit=unit)
 
 
 def uniform_grid(dims, origin=(0.0, 0.0, 0.0), spacing=(1.0, 1.0, 1.0), direction=None,
-                 dtype=tack.f32, device=None, unit=None):
+                 dtype=None, device=None, unit=None):
     """A dataset of ``dims`` points (one to three sizes) at ``origin + direction @
     (ijk * spacing)``: VTK's image data, Viskores' uniform data set. Nothing per
     point is stored (``UniformCoordinates``). A size of 1 adds no cells, in any
@@ -1182,12 +1475,13 @@ def uniform_grid(dims, origin=(0.0, 0.0, 0.0), spacing=(1.0, 1.0, 1.0), directio
     dataset origin, moved in double precision, as a point cloud's origin
     keeps its points. ``unit`` is the spatial unit (``DataSet.unit``), which
     ``origin`` and ``spacing`` are in."""
+    dtype = tack.get_default_float() if dtype is None else dtype
     topology = grid_topology(dims, device=device)   # the sizes as given, before padding
     return DataSet(topology, UniformCoordinates(dims, origin, spacing, direction, dtype=dtype,
                                                 device=device), unit=unit)
 
 
-def point_cloud(positions, fields=None, origin=None, dtype=tack.f32, device=None, unit=None,
+def point_cloud(positions, fields=None, origin=None, dtype=None, device=None, unit=None,
                 units=None):
     """A point cloud: a dataset of ``positions``, one vertex cell per point (types,
     offsets and connectivity implicit, stored nowhere), with ``fields`` (a dict of
@@ -1196,13 +1490,15 @@ def point_cloud(positions, fields=None, origin=None, dtype=tack.f32, device=None
     ``positions`` is an ``(n, 3)`` host array of world positions, or a Tack array
     of 3-vectors already relative to ``origin``. Host positions are taken
     relative to ``origin`` in double precision before they become ``dtype``;
-    without one, float64 positions get the lower corner of their box, rounded
-    down to whole units, so a LiDAR survey's eastings and northings keep their
-    precision in single precision, and other positions get zero. ``dtype`` is
+    without one, float64 positions far from zero for their box's width get its
+    lower corner, rounded down to whole units (``automatic_origin``), so a
+    LiDAR survey's eastings and northings keep their precision in single
+    precision, and other positions get zero. ``dtype`` is
     ``tack.f32``, or ``tack.f64`` on a device that has it. Floating-point fields
     become ``dtype`` too; integer fields (a LAS classification, intensities) keep
     their type. ``unit`` is the spatial unit (``DataSet.unit``), which ``origin``
     is in, and ``units`` maps field names to their units."""
+    dtype = tack.get_default_float() if dtype is None else dtype
     from tack.dataset import ids
     from tack.dataset.algorithms._extract import _vertex_cells
     from tack.dataset.topology import UnstructuredTopology
@@ -1219,7 +1515,7 @@ def point_cloud(positions, fields=None, origin=None, dtype=tack.f32, device=None
                            else None).reshape(-1, 3)
         n = len(world)
         if origin is None and world.dtype == np.float64 and n:
-            origin = np.floor(world.min(axis=0))
+            origin = automatic_origin(world.min(axis=0), world.max(axis=0))
         local = world.astype(np.float64) - np.asarray(as_origin(origin))
     with target:
         topology = UnstructuredTopology(*_vertex_cells(n, ids.choose(None, n)), num_points=n)

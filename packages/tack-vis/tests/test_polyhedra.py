@@ -1208,3 +1208,198 @@ def test_a_cell_not_star_shaped_from_its_cell_point_is_refused(backend):
     data = td.DataSet(td.PolyhedralTopology.from_cell_faces([faces], 16, pts, orient=True), pts)
     with pytest.raises(NotImplementedError, match="1 of the 1 cells are not star-shaped"):
         td.CellLocator(data)
+
+
+def test_global_ids_over_polyhedral_and_shape_pieces():
+    """A grid split by cell type, shape cells in one piece and polyhedra in the
+    other (how a VTU mixing them is read): ``generate_global_ids`` matches the
+    points they share across the polyhedral piece's faces of any size, so a
+    reduction counts each point once."""
+    left = td.uniform_grid((3, 3, 3))
+    right = td.as_polyhedra(td.uniform_grid((3, 3, 3), origin=(2, 0, 0)))
+    for piece in (left, right):
+        piece.fields["x"] = td.Field(td.H1(piece), tack.array(piece.positions()[:, 0]))
+    pieces = td.generate_global_ids(td.PartitionedDataSet([left, right]))
+    assert td.statistics(pieces, "x").n == 27 + 27 - 9
+
+
+def _mixed_vtu_grid():
+    """A VTK grid of hexahedra, wedges and polyhedra side by side, points merged, a
+    point field (x) and a cell field (each cell's id)."""
+    pytest.importorskip("vtkmodules.vtkCommonDataModel")
+    import vtkmodules.vtkCommonDataModel as dm
+    from vtkmodules.vtkCommonCore import vtkPoints
+    from vtkmodules.vtkFiltersCore import vtkAppendFilter
+    from vtkmodules.vtkFiltersSources import vtkCellTypeSource
+
+    append = vtkAppendFilter(merge_points=True)
+    for shift, kind in ((0, dm.VTK_HEXAHEDRON), (4, dm.VTK_POLYHEDRON), (-4, dm.VTK_WEDGE)):
+        block = vtkCellTypeSource(cell_type=kind, blocks_dimensions=(4, 4, 4))()
+        x = np.asarray(block.points.data).copy()
+        x[:, 0] += shift
+        block.points = vtkPoints(data=x)
+        append.AddInputData(block)
+    append.Update()
+    grid = append.GetOutput()
+    grid.point_data["T"] = np.asarray(grid.points.data)[:, 0].astype(np.float32)
+    grid.cell_data["c"] = np.arange(grid.number_of_cells, dtype=np.float32)
+    # A point array and a cell array of one name, as solvers write their averages.
+    grid.point_data["p"] = np.ones(grid.number_of_points, np.float32)
+    grid.cell_data["p"] = np.full(grid.number_of_cells, 2.0, np.float32)
+    return grid
+
+
+@pytest.mark.parametrize("copy", [True, False])
+def test_split_reads_shapes_and_polyhedra_over_one_set_of_points(copy):
+    """``vtk_to_dataset(..., polyhedral="split")``: the shaped cells one piece and the
+    polyhedra another, over the same points (one positions array, one array per
+    point field), each point owned once, each cell its rows of the cell data; cut
+    as the whole read as polyhedra is."""
+    from tack.interop.vtk import vtk_to_dataset
+
+    grid = _mixed_vtu_grid()
+    types = np.asarray(grid.cell_types)
+    pieces = vtk_to_dataset(grid, polyhedral="split", copy=copy)
+    shaped, polyhedral = pieces[0], pieces[1]
+    assert isinstance(shaped.topology, td.UnstructuredTopology)
+    assert isinstance(polyhedral.topology, td.PolyhedralTopology)
+    assert shaped.geometry.values is polyhedral.geometry.values
+    assert shaped.fields["T"].values is polyhedral.fields["T"].values
+    assert td.statistics(pieces, "T").n == grid.number_of_points
+    np.testing.assert_array_equal(shaped.fields["c"].values.numpy(), np.flatnonzero(types != 42))
+    np.testing.assert_array_equal(polyhedral.fields["c"].values.numpy(),
+                                  np.flatnonzero(types == 42))
+    np.testing.assert_array_equal(polyhedral.global_ids.cells.numpy(),
+                                  np.flatnonzero(types == 42))
+    for piece in pieces:                         # both "p"s, each in its own space
+        assert piece.fields["p", td.H1].values.numpy().tolist() == [1.0] * grid.number_of_points
+        assert set(piece.fields["p", td.Constant].values.numpy().tolist()) == {2.0}
+    whole = vtk_to_dataset(grid, polyhedral=True)
+
+    def area(data):
+        return float(td.cell_geometry(data).measure.values.numpy().sum()) if data.num_cells else 0
+
+    for level in (-2.0, 2.0, 6.0):
+        np.testing.assert_allclose(sum(area(td.contour(p, "T", level)) for p in pieces),
+                                   area(td.contour(whole, "T", level)), rtol=1e-6)
+
+
+def test_split_of_one_kind_is_one_piece():
+    pytest.importorskip("vtkmodules.vtkCommonDataModel")
+    import vtkmodules.vtkCommonDataModel as dm
+    from vtkmodules.vtkFiltersSources import vtkCellTypeSource
+
+    from tack.interop.vtk import vtk_to_dataset
+
+    for kind, topology in ((dm.VTK_HEXAHEDRON, td.UnstructuredTopology),
+                           (dm.VTK_POLYHEDRON, td.PolyhedralTopology)):
+        pieces = vtk_to_dataset(vtkCellTypeSource(cell_type=kind, blocks_dimensions=(2, 2, 2))(),
+                                polyhedral="split")
+        assert len(pieces) == 1 and isinstance(pieces[0].topology, topology)
+
+
+def _inside_out_wedges():
+    """VTK's wedges, and the same with each wedge's corners in the reverse order (as
+    some converters write prisms), on the same points."""
+    pytest.importorskip("vtkmodules.vtkCommonDataModel")
+    import vtkmodules.vtkCommonDataModel as dm
+    from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkUnstructuredGrid
+    from vtkmodules.vtkFiltersSources import vtkCellTypeSource
+
+    upright = vtkCellTypeSource(cell_type=dm.VTK_WEDGE, blocks_dimensions=(3, 2, 2))()
+    offsets = np.asarray(upright.cells.offsets_array)
+    corners = np.asarray(upright.cells.connectivity_array).reshape(-1, 6)[:, [0, 2, 1, 3, 5, 4]]
+    flipped = vtkUnstructuredGrid()
+    flipped.SetPoints(upright.GetPoints())
+    flipped.cells = (dm.VTK_WEDGE, vtkCellArray(offsets=offsets, connectivity=corners.reshape(-1)))
+    return upright, flipped
+
+
+def test_inside_out_cells_warn_and_orient_turns_them_outward():
+    from tack.interop.vtk import vtk_to_dataset
+
+    upright, flipped = _inside_out_wedges()
+    expected = td.cell_geometry(vtk_to_dataset(upright)).measure.values.numpy()
+    assert (expected > 0).all()
+    with pytest.warns(UserWarning, match=r"24 cells are inside out \(24 wedges\)"):
+        as_written = vtk_to_dataset(flipped)
+    assert (td.cell_geometry(as_written).measure.values.numpy() < 0).all()
+    repaired = vtk_to_dataset(flipped, orient=True)
+    np.testing.assert_allclose(td.cell_geometry(repaired).measure.values.numpy(), expected,
+                               rtol=1e-6)
+
+
+def test_orient_repairs_shapes_before_matching_polyhedral_faces():
+    """Read as polyhedra, inside-out wedges stacked on upright ones wind the triangles
+    they share the same way: refused without ``orient``, and with it the inside-out
+    ones are turned outward and the faces match, without the cell-by-cell walk."""
+    pytest.importorskip("vtkmodules.vtkCommonDataModel")
+    from vtkmodules.vtkCommonCore import vtkPoints
+    from vtkmodules.vtkFiltersCore import vtkAppendFilter
+
+    from tack.interop.vtk import vtk_to_dataset
+
+    upright, flipped = _inside_out_wedges()
+    x = np.asarray(flipped.points.data).copy()
+    x[:, 2] += 2                                           # on top, sharing z = 2
+    flipped.points = vtkPoints(data=x)
+    append = vtkAppendFilter(merge_points=True)
+    append.AddInputData(upright)
+    append.AddInputData(flipped)
+    append.Update()
+    grid = append.GetOutput()
+    with pytest.warns(UserWarning, match="inside out"), \
+            pytest.raises(ValueError, match="wound the same way"):
+        vtk_to_dataset(grid, polyhedral=True)
+    data = vtk_to_dataset(grid, polyhedral=True, orient=True)
+    assert data.num_cells == grid.number_of_cells
+
+
+def test_a_tangled_cell_is_not_turned():
+    """A hexahedron negative at corner 0 but of positive volume (corner 0 pushed
+    inside) is tangled, not inside out: no warning, and its corners stay."""
+    pytest.importorskip("vtkmodules.vtkCommonDataModel")
+    import warnings
+
+    import vtkmodules.vtkCommonDataModel as dm
+    from vtkmodules.vtkCommonCore import vtkPoints
+    from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkUnstructuredGrid
+
+    from tack.interop.vtk import vtk_to_dataset
+
+    x = np.array([[0.45, 0.45, 0.45], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+                  [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], np.float64)
+    grid = vtkUnstructuredGrid()
+    grid.points = vtkPoints(data=x)
+    grid.cells = (dm.VTK_HEXAHEDRON, vtkCellArray(offsets=np.array([0, 8]),
+                                                  connectivity=np.arange(8)))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        data = vtk_to_dataset(grid, orient=True)
+    np.testing.assert_array_equal(data.topology.connectivity.numpy(), np.arange(8))
+
+
+def test_inside_out_polyhedra_warn_and_orient_turns_them_outward():
+    """Polyhedra whose every face is listed inward agree with each other, so matching
+    passes them; their negative volumes are what shows them, in a warning, and
+    ``orient=True`` turns them outward."""
+    pytest.importorskip("vtkmodules.vtkCommonDataModel")
+    import vtkmodules.vtkCommonDataModel as dm
+    from vtkmodules.vtkFiltersSources import vtkCellTypeSource
+
+    from tack.interop.vtk import vtk_to_dataset
+
+    grid = vtkCellTypeSource(cell_type=dm.VTK_POLYHEDRON, blocks_dimensions=(3, 2, 2))()
+    expected = td.cell_geometry(vtk_to_dataset(grid)).measure.values.numpy()
+    faces = grid.polyhedron_faces
+    offsets = np.asarray(faces.offsets_array)
+    points = np.asarray(faces.connectivity_array)
+    for f in range(len(offsets) - 1):                    # every face listed the other way
+        points[offsets[f]:offsets[f + 1]] = points[offsets[f]:offsets[f + 1]][::-1].copy()
+    grid.Modified()
+    with pytest.warns(UserWarning, match=f"{grid.number_of_cells} polyhedra are inside out"):
+        as_written = vtk_to_dataset(grid)
+    assert (td.cell_geometry(as_written).measure.values.numpy() < 0).all()
+    repaired = vtk_to_dataset(grid, orient=True)
+    np.testing.assert_allclose(td.cell_geometry(repaired).measure.values.numpy(), expected,
+                               rtol=1e-6)

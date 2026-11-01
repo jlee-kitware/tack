@@ -28,6 +28,7 @@ from tack.lang.types import (
     as_dtype,
     f32,
     from_numpy_dtype,
+    get_default_float,
     i32,
     i64,
     integer_type_for_value,
@@ -810,13 +811,14 @@ def _host_dtype(host: np.ndarray, values) -> ScalarType:
     """The dtype an array made from host ``values`` gets when none is given.
 
     A NumPy array keeps its own. Python numbers and sequences of them, which
-    NumPy would make float64 or int64, become f32, and i32 unless a value
-    needs i64 (f64 is not available on every backend).
+    NumPy would make float64 or int64, become the default float type (f32
+    unless `set_default_float` changed it; f64 is not available on every
+    backend), and i32 unless a value needs i64.
     """
     if isinstance(values, np.ndarray) or isinstance(values, np.generic):
         return from_numpy_dtype(host.dtype)
     if host.dtype.kind == 'f':
-        return f32
+        return get_default_float()
     if host.dtype.kind in 'iu':
         if host.size == 0:
             return i32
@@ -836,10 +838,11 @@ def _target(device):
     return device if isinstance(device, Backend) else backend_of(device)
 
 
-def empty(shape, dtype=f32, *, device=None, exportable=False, layout="aos") -> Array:
+def empty(shape, dtype=None, *, device=None, exportable=False, layout="aos") -> Array:
     """A new array of uninitialized scalar, vector or matrix elements.
 
-    ``shape`` counts elements; ``dtype`` describes one element. A vector
+    ``shape`` counts elements; ``dtype`` describes one element, by default the
+    default float type (f32 unless `set_default_float` changed it). A vector
     array of shape ``(n,)`` and dtype ``vec3(f32)`` downloads as ``(n, 3)``.
     Initialize its values with a kernel, ``fill`` or ``tack.copyto`` before
     reading. ``device`` is a `tack.Device` or a spec such as ``"cuda"``; by
@@ -848,15 +851,32 @@ def empty(shape, dtype=f32, *, device=None, exportable=False, layout="aos") -> A
     """
     backend = _target(device)
     shape = _array_shape(shape)
-    dtype = as_dtype(dtype)
+    dtype = get_default_float() if dtype is None else as_dtype(dtype)
     if _check_layout(layout, dtype):
         return SoaArray(tuple(empty(shape, dtype.scalar_dtype, device=backend,
                                     exportable=exportable) for _ in range(dtype.size)),
                         dtype.shape)
     scalar = dtype.scalar_dtype if isinstance(dtype, ElementType) else dtype
+    _check_dtype(backend, scalar)
     storage = (int(math.prod(shape)) * dtype.size,) if isinstance(dtype, ElementType) else shape
     buffer = _allocate(backend, scalar, storage, exportable=exportable)
     return _array_view(dtype, shape, buffer, device=backend)
+
+
+def _check_dtype(backend, scalar):
+    """Refuse an array of a type the device's kernels cannot take (``f64`` on
+    Metal, or on a Level Zero device without it) where it is made, rather than
+    at the first kernel that is given it."""
+    if scalar not in backend.supported_dtypes:
+        supported = ", ".join(str(t) for t in sorted(backend.supported_dtypes,
+                                                     key=lambda t: t.name))
+        raise TypeError(
+            f"{scalar} arrays are not supported on {backend.label}, whose kernels "
+            f"take {supported}. Use a supported type (f32 for f64), or keep the "
+            f"array on a device that has {scalar}."
+            + (f" {scalar} is the default float type: tack.set_default_float(tack.f32) "
+               f"makes arrays f32 by default." if scalar is get_default_float()
+               and scalar is not f32 else ""))
 
 
 def _allocate(backend, dtype, shape, **options):
@@ -888,21 +908,22 @@ def _empty_for_mpi(shape, dtype, device) -> Array:
     shape = _array_shape(shape)
     dtype = as_dtype(dtype)
     scalar = dtype.scalar_dtype if isinstance(dtype, ElementType) else dtype
+    _check_dtype(backend, scalar)
     storage = (int(math.prod(shape)) * dtype.size,) if isinstance(dtype, ElementType) else shape
     return _array_view(dtype, shape, backend.allocate_mpi_array(scalar, storage),
                        device=backend)
 
 
-def zeros(shape, dtype=f32, *, device=None, layout="aos") -> Array:
-    """A new array of zeros, filled on the device."""
+def zeros(shape, dtype=None, *, device=None, layout="aos") -> Array:
+    """A new array of zeros, filled on the device; ``dtype`` as `empty`'s."""
     a = empty(shape, dtype, device=device, layout=layout)
     if not a._starts_zeroed:
         a.fill(0)
     return a
 
 
-def ones(shape, dtype=f32, *, device=None, layout="aos") -> Array:
-    """A new array of ones."""
+def ones(shape, dtype=None, *, device=None, layout="aos") -> Array:
+    """A new array of ones; ``dtype`` as `empty`'s."""
     a = empty(shape, dtype, device=device, layout=layout)
     a.fill(1)
     return a
@@ -911,8 +932,8 @@ def ones(shape, dtype=f32, *, device=None, layout="aos") -> Array:
 def full(shape, fill_value, dtype=None, *, device=None, layout="aos") -> Array:
     """A new array with every element ``fill_value``.
 
-    Without ``dtype``, a Python float gives f32 and an int i32 (i64 if it
-    needs it). A sequence fills vector or matrix elements; it needs an
+    Without ``dtype``, a Python float gives the default float type (f32 unless
+    `set_default_float` changed it) and an int i32 (i64 if it needs it). A sequence fills vector or matrix elements; it needs an
     element ``dtype``.
     """
     if dtype is None:
@@ -979,8 +1000,9 @@ def array(obj, dtype=None, *, device=None, layout=None) -> Array:
     """A new array holding a copy of ``obj``: a NumPy array, a sequence or a Tack array.
 
     Without ``dtype``, all of ``obj``'s dimensions are array dimensions, a
-    NumPy array keeps its dtype, and Python floats and ints become f32 and
-    i32 (i64 if a value needs it). With an element dtype such as
+    NumPy array keeps its dtype, and Python floats and ints become the default
+    float type (f32 unless `set_default_float` changed it) and i32 (i64 if a
+    value needs it). With an element dtype such as
     ``vec3(f32)``, the trailing dimensions are the elements' components.
     A Tack array is copied on its device unless ``device`` names another.
     ``layout`` is ``"aos"`` or ``"soa"`` for a vector or matrix array (see
@@ -1073,7 +1095,7 @@ def arange(start, stop=None, step=1, dtype=None, *, device=None) -> Array:
     """Evenly spaced values in ``[start, stop)``, as ``np.arange``.
 
     Without ``dtype``, integer arguments give i32 (i64 if a value needs it)
-    and any float argument gives f32.
+    and any float argument gives the default float type (`get_default_float`).
     """
     if stop is None:
         start, stop = 0, start
@@ -1176,7 +1198,9 @@ def array_from_ptr(ptr, shape, dtype, *, device=None, writable: bool = False) ->
     Args:
         ptr: device pointer (integer) or backend-specific buffer object.
              - CPU: integer address or numpy array
-             - Metal: MTLBuffer object (from PyObjC)
+             - Metal: MTLBuffer object (from PyObjC), or a NumPy array of
+               host memory: a buffer Tack handed out, or memory on whole
+               pages, wrapped in place (TypeError otherwise)
              - CUDA/HIP: device pointer as integer
              - Level Zero: device pointer as integer
         shape: the array's dimensions, counting elements
@@ -1197,6 +1221,7 @@ def array_from_ptr(ptr, shape, dtype, *, device=None, writable: bool = False) ->
     else:
         scalar, storage = dtype, shape
     backend = _target(device)
+    _check_dtype(backend, scalar)
 
     # Validate the pointer's memory space against what this backend expects,
     # on backends that distinguish device memory; Metal MTLBuffer objects

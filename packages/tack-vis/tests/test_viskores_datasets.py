@@ -103,6 +103,40 @@ def test_fluxes_skip_cells_of_a_lower_dimension():
     assert (td.perot(data, flux).values.numpy()[lower] == 0.0).all()
 
 
+def _cells(types, offsets, connectivity):
+    points = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [2, 0, 0]], np.float64)
+    topology = td.UnstructuredTopology(np.array(types, np.uint8), np.array(offsets, np.int32),
+                                       np.array(connectivity, np.int32), num_points=5)
+    return td.DataSet(topology, tack.array(points, tack.vec3(tack.f64)))
+
+
+@pytest.mark.quick
+def test_a_surfaces_lines_and_a_mesh_of_vertices_have_no_faces():
+    """A line among triangles (EnSight's and VTK's surfaces carry them) has none of
+    the surface's edges: face geometry, fluxes and normals are the triangles'
+    alone, the line's zero. A mesh of vertices has no faces at all. Both failed
+    inside the kernels, on methods lines and vertices lack ('side_position',
+    'num_faces')."""
+    both = _cells([vd.TRIANGLE, vd.TRIANGLE, vd.LINE], [0, 3, 6, 8], [0, 1, 2, 0, 2, 3, 1, 4])
+    triangles = _cells([vd.TRIANGLE, vd.TRIANGLE], [0, 3, 6], [0, 1, 2, 0, 2, 3])
+    answers = []
+    for data in (both, triangles):
+        area = td.face_geometry(data).area
+        ones = td.Field(td.Values(data, "faces"), tack.ones((area.values.shape[0],), tack.f64))
+        normals = td.surface_normals(data)
+        answers.append([area.values.numpy(), td.net_flux(data, area).values.numpy(),
+                        td.perot(data, ones).values.numpy(),
+                        normals.fields["cell_normals"].values.numpy(),
+                        normals.fields["normals"].values.numpy()])
+    for ours, theirs in zip(*answers):
+        np.testing.assert_array_equal(ours[:len(theirs)], theirs)   # the line's after
+    assert not answers[0][1][2] and not answers[0][2][2].any() and not answers[0][3][2].any()
+    vertices = _cells([vd.VERTEX] * 5, range(6), range(5))
+    none = td.Field(td.Values(vertices, "faces"), tack.ones((0,), tack.f64))
+    assert not td.net_flux(vertices, none).values.numpy().any()
+    assert not td.perot(vertices, none).values.numpy().any()
+
+
 @pytest.mark.quick
 def test_as_polyhedra_refuses_inside_out_neighbours():
     """An inside-out cell beside an upright one goes round their face the same way,
@@ -143,9 +177,8 @@ def test_contours_of_viskores_files():
         solids.AddCellType(shape)
     solids = solids(_read("mixed-cell-shapes.vtk"))
     values = [5.5, 9.5, 11.5, 14.5, 17.5, 20.5, 25.5]
-    with pytest.warns(UserWarning, match="point array and a cell array named 'scalars'"):
-        data = vtk_to_dataset(solids)
-    ours = td.contour(data, "scalars", values)
+    data = vtk_to_dataset(solids)                # a point and a cell array "scalars"
+    ours = td.contour(data, ("scalars", td.H1), values)
     f = vtkContourFilter()
     for i, value in enumerate(values):
         f.SetValue(i, value)
@@ -181,8 +214,7 @@ def test_contours_by_cell_dimension():
                 e.AddCellType(shape)
         return e(grid)
 
-    with pytest.warns(UserWarning, match="named 'scalars'"):
-        data = vtk_to_dataset(cells(3, 2, 1, 0))
+    data = vtk_to_dataset(cells(3, 2, 1, 0))
     values = [5.5, 9.5, 11.5, 14.5, 17.5, 20.5, 25.5]
     f = vtkContourFilter()
     for i, value in enumerate(values):
@@ -190,32 +222,38 @@ def test_contours_by_cell_dimension():
     f.SetInputArrayToProcess(0, 0, 0, 0, "scalars")
     shapes = {3: {vd.TRIANGLE}, 2: {vd.LINE}, 1: {vd.VERTEX}}
     for dimension in (3, 2, 1):
-        ours = td.contour(data, "scalars", values, dimension=dimension)
+        ours = td.contour(data, ("scalars", td.H1), values, dimension=dimension)
         theirs = f(cells(dimension))
         assert ours.num_cells == theirs.number_of_cells > 0, dimension
         assert set(np.unique(ours.topology.types.numpy())) == shapes[dimension]
         assert _measure(ours) == pytest.approx(_vtk_measure(theirs), rel=1e-6)
-    assert td.contour(data, "scalars", values).num_cells == f(cells(3)).number_of_cells
+    assert td.contour(data, ("scalars", td.H1), values).num_cells == \
+        f(cells(3)).number_of_cells
     with pytest.raises(ValueError, match="3, 2 or 1"):
-        td.contour(data, "scalars", values, dimension=0)
+        td.contour(data, ("scalars", td.H1), values, dimension=0)
 
 
 @pytest.mark.quick
 @needs_vtk
 def test_a_point_and_a_cell_array_of_one_name_both_arrive():
-    """VTK keeps point and cell arrays apart; a dataset's fields share one name
-    space. The cell array of ``mixed-cell-shapes.vtk``'s ``scalars`` once
-    replaced the point array, and a contour of it found nothing."""
-    from tack.interop.vtk import vtk_to_dataset
+    """VTK keeps point and cell arrays apart, and so does a dataset: two fields of one
+    name, each found by its space, and both written back under it. The cell array
+    of ``mixed-cell-shapes.vtk``'s ``scalars`` once replaced the point array, and a
+    contour of it found nothing."""
+    from tack.interop.vtk import dataset_to_vtk, vtk_to_dataset
 
     grid = vd.to_vtk(vd.make_3d_explicit_5())
     grid.point_data["v"] = np.arange(grid.number_of_points, dtype=np.float64)
     grid.cell_data["v"] = -np.arange(grid.number_of_cells, dtype=np.float64)
-    with pytest.warns(UserWarning, match="the cell array is the field 'v \\(cells\\)'"):
-        data = vtk_to_dataset(grid)
-    assert isinstance(data.fields["v"].space, td.H1)
-    np.testing.assert_array_equal(data.fields["v"].values.numpy(), np.arange(11))
-    np.testing.assert_array_equal(data.fields["v (cells)"].values.numpy(), [0, -1, -2, -3])
+    data = vtk_to_dataset(grid)
+    assert isinstance(data.fields["v", td.H1].space, td.H1)
+    np.testing.assert_array_equal(data.fields["v", td.H1].values.numpy(), np.arange(11))
+    np.testing.assert_array_equal(data.fields["v", td.Constant].values.numpy(), [0, -1, -2, -3])
+    with pytest.raises(KeyError, match="names 2 fields"):
+        data.fields["v"]
+    back = dataset_to_vtk(data)
+    np.testing.assert_array_equal(np.asarray(back.point_data["v"]), np.arange(11))
+    np.testing.assert_array_equal(np.asarray(back.cell_data["v"]), [0, -1, -2, -3])
 
 
 #: Where Tack differs from VTK by design: in a mesh with 3D cells,
@@ -293,7 +331,7 @@ _REFUSALS = re.compile("|".join([
     "cell ids lie outside",                      # extract_cells([0, 1]) of one cell
     "tetrahedra and wedges; not yet on",         # subdivide of other shapes
     "has the equispaced basis only",             # simplices above order 2, another basis
-    "or all tensor shapes",                      # subdivide of a mix of families
+    "takes cells of one dimension",              # subdivide of a mix of dimensions
 ]))
 
 

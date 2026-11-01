@@ -2,19 +2,21 @@
 ``cylindrical`` and ``spherical``."""
 
 import tack
-from tack.arrays import materialize, size_of
+from tack.arrays import size_of
 from tack.dataset.algorithms._common import _vectors
 from tack.dataset.carry import selected
 from tack.dataset.dataset import DataSet, Field
 
 
-def _moved(data, positions, fields=None):
-    """``data`` with the geometry's values replaced: same topology and sets, and the
-    fields ``fields`` selects (all by default)."""
+def _moved(data, positions, fields=None, space=None):
+    """``data`` with the geometry's values replaced (in ``space``, by default the
+    geometry's): same topology and sets, and the fields ``fields`` selects (all by
+    default)."""
     from tack.dataset.ghosts import keep_marks
 
     fields = {name: data.fields[name] for name in selected(data, fields)}
-    return keep_marks(data, DataSet(data.topology, Field(data.geometry.space, positions),
+    space = data.geometry.space if space is None else space
+    return keep_marks(data, DataSet(data.topology, Field(space, positions),
                                     fields=fields, sets=dict(data.sets)))
 
 
@@ -35,7 +37,7 @@ def _shifted_values(values, dtype, offset):
     n = size_of(values)
     out = _vectors(n, dtype)
     if n:
-        _shift(materialize(values), out, *(float(v) for v in offset))
+        _shift(values, out, *(float(v) for v in offset))
     return out
 
 
@@ -91,7 +93,7 @@ def _recoordinate(data, kernel, fields=None):
     n = size_of(values)
     out = _vectors(n, data.dtype)
     if n:
-        kernel(materialize(values), out)
+        kernel(values, out)
     out = _moved(data, out, fields)
     out.origin = None
     out._geometry = Field(out.geometry.space, out.geometry.values)

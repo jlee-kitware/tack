@@ -127,6 +127,34 @@ Returns the default device: the innermost `with` block's on this thread,
 else the one `set_default_device` chose, else the CPU.
 `tack.runtime.dispatch.get_backend()` returns the same device's `Backend`.
 
+### `tack.set_default_float(dtype)` and `tack.get_default_float()`
+
+Defined in `packages/tack-core/src/tack/lang/types.py`. `set_default_float`
+makes `dtype` (`tack.f32` or `tack.f64`, or a NumPy float type) the default
+float type and returns it; `get_default_float` returns it.
+It is `f32` until set, and process-wide.
+
+**Current behavior:**
+
+- It is the type of: `empty`, `zeros` and `ones` without a `dtype`; Python
+  floats in `array`, `full` and `arange`; the components of `vec`, `mat` and
+  `vec2` ... `mat4` without a component type; floats in `tack.arrays`'
+  implicit arrays (`ConstantArray`, `CountingArray`, `UniformCoordinates`,
+  `CartesianProduct`, `Function`, host values an array holds); and
+  `tack.dataset`'s constructors, sources and readers without a `dtype`
+  (`DataSet`, `uniform_grid`, `rectilinear_grid`, `point_cloud`, `wavelet`,
+  `tangle`, `amr_gaussian_pulse`, `vtk_to_dataset`, `mfem_to_dataset`,
+  `mfem_field`). It is read when each is called.
+- A NumPy array keeps its type, a `*_like` its prototype's, and arrays
+  already made keep theirs. `vtk_to_dataset(dtype=None)` keeps VTK's types.
+- Kernels are unchanged: scalar arguments, literals and casts are typed by
+  the rules of the language contract, which follow the arrays a call passes.
+  Library code chooses its types explicitly and doesn't depend on the
+  setting.
+- Any other type raises `TypeError`. On a device without `f64` (Metal), an
+  array that the setting makes `f64` is refused where it is made, and the
+  message names the setting.
+
 ### Where arrays live and kernels run
 
 - Every array records its device: `a.device` is a `tack.Device`. Every
@@ -231,10 +259,12 @@ The buffer belongs to the array's device (`a.device`; see
 - On the CPU, a fill of 256 KiB or more runs as a kernel through the
   dispatch, in parallel when the threading policy fans it out, and stores
   and refuses exactly what `ndarray.fill` would.
-- Allocation doesn't check the dtype against `supported_dtypes`. An `f64`
-  array can be allocated on Metal, and the
+- An array is made only of a dtype in its device's `supported_dtypes`:
+  `empty` (and every constructor, copy and `to_device` built on it),
+  `array_from_ptr` and DLPack imports raise `TypeError` otherwise, so an
+  `f64` array cannot be made on Metal. The
   [dispatch check](backend-capabilities.md#what-each-capability-gates)
-  rejects it when a kernel uses it.
+  still rejects an array a kernel's backend cannot take.
 - There is no `tack.fields()` function.
 - Vector/matrix arrays expose their array shape and element dtype on
   both host and device. `numpy()` appends component dimensions.
@@ -453,7 +483,7 @@ See [Interoperability](../design/interoperability.md).
 ## Communication between blocks
 
 Defined in `packages/tack-core/src/tack/communication/`. A guide:
-[Communicate Between Blocks](../vis-guide/14-communication.md).
+[Communicate Between Blocks](../users-guide/18-communication.md).
 
 **Blocks and worlds.** `Blocks(devices, world=None)` holds this rank's
 blocks, one per entry of `devices`. Global ids run over every rank's
@@ -723,7 +753,7 @@ Translated exceptions keep the original as `__cause__`.
 |---|---|---|
 | `UnsupportedSyntaxError` | Syntax outside the kernel language, in a kernel or a device function, including unreachable statements; a kernel without exactly one parallel loop directly in its body; a store, atomic, barrier, block reduction or `print` outside the parallel loop, including through an inlined device function or template method | First dispatch or inspection (frontend) |
 | `NameError` | A name that is neither a parameter nor assigned. Kernels don't capture Python globals | First dispatch or inspection (frontend) |
-| `TypeError` | A device spec that is neither a string nor a `Device`, options with a `Device`, argument count or type, an integer outside 64 bits, an array dtype unsupported by the backend, an unsupported atomic dtype or target, the MSL generator receiving `f64`, `inspect` of a non-kernel, `@tack.func` on a non-function, a dtype argument that is neither a Tack type nor a NumPy dtype with a Tack type, `array`, `empty_like` or DLPack dtypes, an invalid `*_like` prototype, `concat` dtypes, `copyto` into a non-array, host element assignment or iteration, a non-`MTLBuffer` on Metal, an `array_from_ptr` pointer that isn't an address on CUDA, HIP or Level Zero | Dispatch (cold), inspection, host calls |
+| `TypeError` | A device spec that is neither a string nor a `Device`, options with a `Device`, argument count or type, an integer outside 64 bits, an array dtype unsupported by the backend (when made, and at dispatch), an unsupported atomic dtype or target, the MSL generator receiving `f64`, `inspect` of a non-kernel, `@tack.func` on a non-function, a dtype argument that is neither a Tack type nor a NumPy dtype with a Tack type, `array`, `empty_like` or DLPack dtypes, an invalid `*_like` prototype, `concat` dtypes, `copyto` into a non-array, host element assignment or iteration, a non-`MTLBuffer` on Metal, an `array_from_ptr` pointer that isn't an address on CUDA, HIP or Level Zero | Dispatch (cold), inspection, host calls |
 | `ValueError` | Unknown device type, device number or option, arrays on two devices in one launch, an unknown `TACK_CPU_POLICY`, incomplete `external_context`, workgroup participation, launch counts or device group size, a launch or reduction larger than one grid can index, atomic alignment, a read-only array the kernel may store to, `array_from_ptr` memory space, shape mismatches (including `copyto` shapes that do not broadcast), `reshape`, `texture3d` arguments, empty `min`/`max`, empty `concat`, unknown inspect mode or `"optimized"` off CPU, template method or attribute errors, malformed or `kDLMetal` DLPack tensors | Device creation, dispatch (cold or every call), inspection, host calls |
 | `NotImplementedError` | Workgroup primitives on CPU, keyword arguments, and the few lowering checks that source validation doesn't already report as `UnsupportedSyntaxError` | Raised directly by inspection. Wrapped in `RuntimeError` at dispatch |
 | `RuntimeError` | Device start-up failures, compilation and launch failures, unreadable kernel or device-function source, host writes to read-only arrays, calling device-only functions (`tack.shared`, `tack.atomic_add`, `@tack.func`s) from Python, DLPack device refusals, `export_memory` on unsupported backends, `tack.interop.vtk` requirements, and IR verification failures (`IRVerificationError`, a `RuntimeError` subclass, raised when a pass leaves IR that breaks a structural invariant) | Everywhere |

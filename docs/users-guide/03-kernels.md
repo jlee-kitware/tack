@@ -349,10 +349,16 @@ The three modes are:
 | `"source"` | Backend source code: LLVM IR (CPU), MSL (Metal), CUDA C, HIP C, OpenCL C |
 | `"optimized"` | Post-optimization LLVM IR (loop vectorization, unrolling, etc.). CPU only; other backends raise `ValueError` |
 
+The code is for the device the call would run on: the default device if it
+can address the arguments' arrays, otherwise theirs, chosen when `inspect` is
+called, as each call chooses. To see another backend's code, pass arrays on
+that device (`tack.empty((n,), device="metal")`); a `with tack.device(...)`
+block alone does not move a call whose arrays its device cannot address.
+
 You must pass the same arguments the kernel would receive at runtime, since
 type inference, dimension resolution, and template expansion all depend on
 them. Inspection applies the same checks as a call, so arguments a call
-would reject (an `f64` array on Metal, for example) raise here too, and
+would reject (an `i64` atomic on Metal, for example) raise here too, and
 on GPUs without texture hardware the source shows the software sampling
 the call would use. Templates and scalar arguments work as expected:
 

@@ -18,6 +18,9 @@ cell every piece chooses alike, the lowest global id or the first centroid by
 position. With ghost marks, each lattice point is marked as ``carry`` marks a
 point it makes (``_lattice_marks``) and each sub-cell takes its parent's, so each
 piece's cut is its share of the whole's.
+
+An ``L2`` geometry shares nothing: cells that share points in the topology need not
+meet in space (a periodic mesh's seam), so each cell's lattice points are its own.
 """
 
 import numpy as np
@@ -28,6 +31,7 @@ from tack.algorithms.scan import exclusive_scan
 from tack.algorithms.sort import argsort
 from tack.arrays import ConstantArray, size_of
 from tack.dataset import bases, ids, shapes, views
+from tack.dataset.carry import selected
 from tack.dataset.dataset import Field, for_each
 from tack.dataset.ghosts import _before
 from tack.dataset.spaces import H1, L2, Constant, Values
@@ -109,6 +113,13 @@ def _lattice_keys(cells, t, slot_of, per_cell, node_of, keys):
         if slot >= 0:
             for n in range(per_cell):
                 keys[slot * per_cell + n] = t.dof_index(c, node_of[n])
+
+
+@tack.kernel
+def _own_keys(keys):
+    # Every refined cell's lattice points its own.
+    for k in range(keys.shape[0]):
+        keys[k] = k
 
 
 @tack.kernel
@@ -822,22 +833,23 @@ def _cell_ranks(data, slot_of, chosen, count):
     return out
 
 
-def _cell_family(data, what):
-    """``(dimension, family)``: the cells' dimension and family, ``"tensor"``
-    (segments, quads, pixels, hexahedra, voxels), ``"simplex"`` (triangles,
-    tetrahedra) or ``"wedge"``. One family and one dimension per mesh."""
+def _cell_families(data, what):
+    """``(dimension, families)``: the cells' dimension and their families in the
+    order ``_refined`` joins them, ``"tensor"`` (segments, quads, pixels,
+    hexahedra, voxels), ``"wedge"`` and ``"simplex"`` (triangles, tetrahedra).
+    One dimension per mesh."""
     groups = [g for g in data.topology.groups() if g.count]
     for group in groups:
         if not bases.has_bases(group.shape):
             raise NotImplementedError(
                 f"{what} is on segments, quads, pixels, hexahedra, voxels, triangles, "
                 f"tetrahedra and wedges; not yet on {group.shape.__name__} cells")
-    families = {_family(g.shape) for g in groups}
+    present = {_family(g.shape) for g in groups}
     dims = {g.shape.DIMENSION for g in groups}
-    if len(dims) > 1 or len(families) > 1:
-        raise NotImplementedError(f"{what} takes cells of one dimension, all simplices, all "
-                                  "wedges or all tensor shapes")
-    return (dims.pop() if dims else 3), (families.pop() if families else "tensor")
+    if len(dims) > 1:
+        raise NotImplementedError(f"{what} takes cells of one dimension")
+    families = tuple(f for f in ("tensor", "wedge", "simplex") if f in present) or ("tensor",)
+    return (dims.pop() if dims else 3), families
 
 
 def _family(shape):
@@ -862,6 +874,36 @@ def default_level(data, *fields):
 def _refined(data, flags, level, fields, elsewhere=None, cut=None):
     """The cells ``flags`` marks, cut into ``level`` steps along each axis: an
     unstructured linear dataset of their sub-cells, its geometry and ``fields`` (a
+    dict of names to fields) evaluated at the lattice points (``H1`` and ``L2`` fields
+    of any order; an ``L2`` field is evaluated from one cell at a shared point, the
+    one every piece chooses alike, so its jumps are not kept), cell fields taken
+    from each sub-cell's parent. ``elsewhere`` (i32 per point, optional) flags
+    points another part owns: the refined dataset's point field ``SEAM`` is 1 at
+    the lattice corners on them, 0 elsewhere. ``cut``, ``(name, levels)``, makes a
+    cut of field ``name`` at ``levels`` put its crossings at the field's roots
+    (``_crossings``).
+
+    A mesh of several families (hexahedra, wedges and tetrahedra) is refined a
+    family at a time and the parts joined at their lattice points: each point's
+    id is a node of the equispaced ``H1`` space of order ``level`` over the whole
+    mesh, so a point on a face two families share is one point, its values from
+    the first family holding it (tensor, then wedge, then simplex). Its cuts'
+    crossings are placed on the sub-cells (``cut`` is for one family).
+
+    Returns ``(refined, parent)``, ``parent`` each sub-cell's cell."""
+    dimension, families = _cell_families(data, "subdivision")
+    if len(families) == 1:
+        refined, parent, _ = _refined_family(data, flags, level, fields, elsewhere, cut,
+                                             dimension, families[0])
+        return refined, parent
+    parts = [_refined_family(data, _family_flags(data, flags, family), level, fields,
+                             elsewhere, None, dimension, family) for family in families]
+    return _joined(data, parts)
+
+
+def _refined_family(data, flags, level, fields, elsewhere, cut, dimension, cell_family):
+    """The cells ``flags`` marks, cut into ``level`` steps along each axis: an
+    unstructured linear dataset of their sub-cells, its geometry and ``fields`` (a
     dict of names to fields) evaluated at the lattice points (``H1`` and ``L2`` fields of any order;
     an ``L2`` field is evaluated from one cell at a shared point, the one every piece
     chooses alike, so its jumps are not kept), cell fields taken from each sub-cell's parent.
@@ -869,10 +911,11 @@ def _refined(data, flags, level, fields, elsewhere=None, cut=None):
     refined dataset's point field ``SEAM`` is 1 at the lattice corners on them, 0
     elsewhere. ``cut``, ``(name, levels)``, makes a cut of field ``name`` at
     ``levels`` put its crossings at the field's roots (``_crossings``).
-    Returns ``(refined, parent)``, ``parent`` each sub-cell's cell."""
+    Cells of ``cell_family`` alone (``_refined`` joins the families). Returns
+    ``(refined, parent, keys)``: ``parent`` each sub-cell's cell, ``keys`` each
+    point's lattice id (shared by every family holding it)."""
     from math import comb
 
-    dimension, cell_family = _cell_family(data, "subdivision")
     simplex = cell_family != "tensor"       # simplices and wedges: table-driven sub-cells
     topology = data.topology
     n = data.num_cells
@@ -890,17 +933,23 @@ def _refined(data, flags, level, fields, elsewhere=None, cut=None):
     total = count * per_cell
     keys = tack.empty((total,), tack.i64)
     if count:
-        if level == 1:
+        if isinstance(data.geometry.space, L2):
+            # A discontinuous geometry: cells that share points in the topology need
+            # not meet in space (a periodic mesh's seam, a mesh displaced by a DG
+            # field), so each cell's lattice is its own.
+            _own_keys(keys)
+        elif level == 1:
             corner_of = tack.array(np.asarray(bases.dof_tables(
-                next(g.shape for g in topology.groups() if g.count), 1)[1], np.int32))
+                next(g.shape for g in topology.groups()
+                     if g.count and _family(g.shape) == cell_family), 1)[1], np.int32))
             for group in topology.groups():
-                if group.count:
+                if group.count and _family(group.shape) == cell_family:
                     _corner_keys(group.view(), slot_of, corner_of, keys)
         else:
             space = H1(data, order=level, basis="equispaced")
             lattice = Field(space, ConstantArray(0.0, space.size, dtype=data.dtype))
             for group in data.launch_groups("cells", [lattice]):
-                if group.count:
+                if group.count and _family(group.shape) == cell_family:
                     node_of = tack.array(bases.view_order(group.shape, level))
                     _lattice_keys(data.domain_view("cells", group), lattice.view(group),
                                   slot_of, per_cell, node_of, keys)
@@ -925,7 +974,7 @@ def _refined(data, flags, level, fields, elsewhere=None, cut=None):
     tack.copyto(steps, (np.arange(level + 1) / level).astype(data.dtype.numpy_dtype))
     corner_at, ijk = {}, {}
     for group in topology.groups():
-        if group.count:
+        if group.count and _family(group.shape) == cell_family:
             kind, entity, _, _, _ = bases.dof_tables(group.shape, level)
             corner_at[group.root] = tack.array(np.where(kind == bases.CORNER, entity, -1)
                                                .astype(np.int32))
@@ -933,7 +982,7 @@ def _refined(data, flags, level, fields, elsewhere=None, cut=None):
                 bases.lattice_ijk(group.shape, level)).reshape(-1))
     if count:
         for group in data.launch_groups("cells", []):
-            if group.count:
+            if group.count and _family(group.shape) == cell_family:
                 cells = data.domain_view("cells", group)
                 _positions(cells, slot_of, per_cell, ijk[group.root], steps,
                            corner_at[group.root], first, rank, geometry)
@@ -985,7 +1034,7 @@ def _refined(data, flags, level, fields, elsewhere=None, cut=None):
         out = tack.empty((points,), _element(field.values))
         if count:
             for group in data.launch_groups("cells", [field]):
-                if group.count:
+                if group.count and _family(group.shape) == cell_family:
                     cells, u = data.domain_view("cells", group), field.view(group)
                     # A scalar in a tensor basis gathers each cell's values once.
                     kernel = (_tensor_values if isinstance(u, views._TensorBasis)
@@ -1048,7 +1097,148 @@ def _refined(data, flags, level, fields, elsewhere=None, cut=None):
         refined._crossings = Crossings(data, level, by_key, starts, numbers, points,
                                        per_cell, chosen, ranks, fields[name],
                                        refined.fields[name].values, levels, sources)
+    point_keys = tack.empty((points,), tack.i64)
+    if total:
+        _point_keys(keys, first, rank, point_keys)
+    return refined, parent, point_keys
+
+
+@tack.kernel
+def _point_keys(keys, first, rank, out):
+    # Each point's lattice id, from the entry that evaluates it.
+    for k in range(keys.shape[0]):
+        if first[k] == 1:
+            out[rank[k]] = keys[k]
+
+
+@tack.kernel
+def _keep_flags(cells, flags, out):
+    for c in cells:
+        out[cells.entity_id(c)] = flags[cells.entity_id(c)]
+
+
+def _family_flags(data, flags, family):
+    """``flags`` on the cells of ``family``, 0 on the others."""
+    out = tack.zeros((data.num_cells,), tack.i32)
+    for group in data.launch_groups("cells", []):
+        if group.count and _family(group.shape) == family:
+            _keep_flags(data.domain_view("cells", group), flags, out)
+    return out
+
+
+@tack.kernel
+def _sources(order, starts, rank, source):
+    # A joined point's source: the first of its run (the first family holding it).
+    for i in range(order.shape[0]):
+        if starts[i] == 1:
+            source[rank[order[i]]] = order[i]
+
+
+@tack.kernel
+def _renumbered(connectivity, offset, rank, out, at):
+    for i in range(connectivity.shape[0]):
+        out[at + i] = rank[connectivity[i] + offset]
+
+
+@tack.kernel
+def _cell_rows(types, offsets, shape, size, start, at, n):
+    for i in range(n):
+        types[start + i] = shape
+        offsets[start + i] = at + i * size
+
+
+def _joined(data, parts):
+    """The families' refined parts, ``(refined, parent, keys)`` each, as one dataset:
+    their points joined by key (a point several families hold is one point, with
+    the first's values), their cells in family order. Returns ``(refined,
+    parent)``."""
+    from tack.dataset.dataset import DataSet
+    from tack.dataset.ghosts import Ghosts
+
+    counts = [part[0].num_points for part in parts]
+    starts_at = np.concatenate([[0], np.cumsum(counts)]).astype(np.int64)
+    total = int(starts_at[-1])
+    keys = [part[2] for part in parts if part[0].num_points]
+    if isinstance(data.geometry.space, L2):
+        # Its lattice points are each cell's own: none to share.
+        for i, key in enumerate(keys):
+            shifted = tack.empty((size_of(key),), tack.i64)
+            _shift_keys(key, int(starts_at[i]), shifted)
+            keys[i] = shifted
+    joined_keys = tack.concat(keys) if keys else tack.empty((0,), tack.i64)
+    order = argsort(joined_keys) if total else tack.empty((0,), tack.i64)
+    starts = tack.empty((total,), tack.i32)
+    numbers = tack.empty((total,), tack.i64)
+    rank = tack.empty((total,), tack.i64)
+    points = 0
+    if total:
+        _run_starts(joined_keys, order, starts)
+        points = exclusive_scan(starts, numbers, total)
+        _ranks(order, starts, numbers, rank)
+    source = tack.empty((points,), tack.i64)
+    if total:
+        _sources(order, starts, rank, source)
+
+    def take(values):
+        joined = tack.concat([v for v, part in zip(values, parts) if part[0].num_points])
+        out = tack.empty((points,), arrays.element_type(joined))
+        if points:
+            _take_values(joined, source, out)
+        return out
+
+    cells = [part[0].num_cells for part in parts]
+    conns = [part[0].topology.connectivity for part in parts]
+    sizes = [size_of(c) for c in conns]
+    idt = ids.at_least(data.id_dtype, max(points, sum(sizes)))
+    connectivity = tack.empty((sum(sizes),), idt)
+    types = tack.empty((sum(cells),), tack.u8)
+    offsets = tack.empty((sum(cells) + 1,), idt)
+    at, cell_at = 0, 0
+    for i, (part, conn) in enumerate(zip(parts, conns, strict=True)):
+        if sizes[i]:
+            _renumbered(conn, int(starts_at[i]), rank, connectivity, at)
+        if cells[i]:
+            shape = int(part[0].topology.groups()[0].shape.ID)
+            _cell_rows(types, offsets, shape, sizes[i] // cells[i], cell_at, at, cells[i])
+        at += sizes[i]
+        cell_at += cells[i]
+    _last_offset(offsets, sum(cells), at)
+    topology = UnstructuredTopology(types, offsets, connectivity, num_points=points,
+                                    id_dtype=idt)
+    first = parts[0][0]
+    refined = DataSet(topology, take([part[0].geometry.values for part in parts]),
+                      **data._frame())
+    for name, field in first.fields.items():
+        if isinstance(field.space, H1):
+            values = take([part[0].fields[name].values for part in parts])
+            refined.fields[name] = Field(H1(refined), values, field.unit)
+        else:
+            values = tack.concat([arrays.materialize(part[0].fields[name].values)
+                                  for part in parts if part[0].num_cells])
+            refined.fields[name] = Field(type(field.space)(refined, *(
+                ("cells",) if isinstance(field.space, Values) else ())), values, field.unit)
+    parent = tack.concat([part[1] for part in parts if part[0].num_cells]) \
+        if any(cells) else tack.empty((0,), data.id_dtype)
+    if data._ghosts_lost:
+        refined._ghosts_lost = data._ghosts_lost
+    elif first.ghosts is not None:
+        marks = [part[0].ghosts for part in parts]
+        refined.ghosts = Ghosts(
+            cells=tack.concat([m.cells for m, part in zip(marks, parts) if part[0].num_cells]),
+            points=take([m.points for m in marks]) if marks[0].points is not None else None)
     return refined, parent
+
+
+@tack.kernel
+def _shift_keys(keys, by, out):
+    for i in range(keys.shape[0]):
+        out[i] = keys[i] + by
+
+
+@tack.kernel
+def _last_offset(offsets, n, at):
+    for i in range(1):
+        offsets[n] = at
 
 
 def _element(values):
@@ -1147,10 +1337,10 @@ def subdivide(data, level=None, fields=None):
     ``vtkCellGridToUnstructuredGrid`` gives one (for export, rendering, or a filter
     that takes only linear cells). ``level`` is by default the largest order of the
     geometry and fields. A lattice point shared by cells is one point, its value
-    computed once. ``H1`` and ``L2`` fields become point data (an ``L2`` field's
+    computed once (on an ``L2`` geometry each cell's points are its own). ``H1`` and ``L2`` fields become point data (an ``L2`` field's
     value at a shared point from one of its cells); cell fields go to every
     sub-cell of their cell. Segments, quads, pixels, hexahedra and voxels."""
-    names = list(data.fields) if fields is None else list(fields)
+    names = selected(data, fields)
     level = default_level(data, *(data.fields[name] for name in names)) if level is None \
         else int(level)
     if level < 1:
@@ -1188,8 +1378,8 @@ def subdivides(data, field):
                                               and (field.space.order > 1
                                                    or getattr(field.space, "tensor", False)))
     groups = [g for g in data.topology.groups() if g.count]
-    families = {_family(g.shape) for g in groups if bases.has_bases(g.shape)}
-    return nonlinear and len(families) <= 1 and all(bases.has_bases(g.shape) for g in groups)
+    dims = {g.shape.DIMENSION for g in groups}
+    return nonlinear and len(dims) <= 1 and all(bases.has_bases(g.shape) for g in groups)
 
 
 def subdivided_contour(data, field, value, levels, nlevels, subdivision, cut, tolerance=None,
@@ -1256,7 +1446,7 @@ def split_by_range(data, field, lower, upper, subdivision, tolerance, fields, cu
     if level < 1:
         raise ValueError(f"subdivision is at least 1, not {level}")
     name = next((k for k, f in data.fields.items() if f is field), "__cut__")
-    names = list(data.fields) if fields is None else list(fields)
+    names = selected(data, fields)
     carried = {k: data.fields[k] for k in names}
     carried[name] = field
     # The whole cells' corners are the whole part's: the cut part's copies are ghosts.

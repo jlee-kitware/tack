@@ -333,6 +333,24 @@ field. It is kept apart from `fields`: `data.geometry` returns it, assigning
 the cells; it is never among the fields they carry or select. An `L2` geometry pulls
 cells apart without changing the topology. A geometry of order 2 is curved.
 
+**Fields.** `data.fields` holds the fields by name and space: two fields may
+share a name in different spaces, as VTK's point and cell arrays do
+([Fields that share a name](../03-fields-and-spaces.md#fields-that-share-a-name)).
+
+| | |
+|---|---|
+| `data.fields["p"]` | the one field called `"p"`; `KeyError` where two share the name |
+| `data.fields["p", td.Constant]`, `data.fields["p", space]` | the field of that name in a kind of space, or in that space |
+| `data.fields["p"] = f` | `f` is the one field called `"p"`, replacing every other |
+| `data.fields["p", space] = f` | `f` beside the fields of that name in other spaces, replacing the one in its own |
+| `"p" in data.fields`, `("p", td.H1) in data.fields` | whether any field matches |
+| `list(data.fields)`, `dict(data.fields)` | the keys: each name, or `(name, space)` for a name fields share; every key finds its field, and `DataSet(fields=...)` takes them back |
+| `data.fields.named("p")`, `data.fields.entries()` | every field called `"p"`; each field with its name |
+
+An algorithm's field argument, and each entry of a filter's `fields=`, is a
+`Field`, a name, or `(name, space)`; in `fields=`, a name selects every field
+of that name.
+
 ## Units
 
 `Field(space, values, unit=None)`: `unit` is the values' physical unit, a
@@ -346,7 +364,7 @@ a unit. See [Physical Units](../12-units.md).
 | `Field(..., unit=)`, `field.unit` | the values' unit, or `None` |
 | `DataSet(..., unit=)`, `data.unit` | the spatial unit, the geometry field's; `uniform_grid`, `rectilinear_grid` and `point_cloud` take `unit=`, `point_cloud` also `units={name: unit}` |
 | `OctreeDataSet(..., units={name: unit})`, `octree.unit`, `octree.units` | the fields' units, and the roots' spatial unit |
-| `convert(data, unit, field=None)` | the geometry (origin scaled in double precision; images stay images) or a field in `unit`, scaled and offset on the device |
+| `convert(data, unit, field=None)` | a `Field` in `unit` (a new field in the same space), or a dataset with its geometry (origin scaled in double precision; images stay images) or a named field in `unit`, scaled and offset on the device |
 | `Statistics.unit`, `.weight_unit`, `.unit_of(name)` | the field's and the weights' units, and each statistic's (variances in the square, `sum` times the weights') |
 | `interpolate(..., unit=)` | the function's values' unit, which its code does not say |
 | quantities as parameters | lengths (`"10 cm"`, `(0.1, "m")`, a unyt or pint quantity) converted to the spatial unit, isovalues and thresholds to the field's, step sizes to the particles' time unit; a mass, density or velocity given as one quantity brings its unit (see [Physical Units](../12-units.md#quantities-as-parameters)) |
@@ -450,7 +468,7 @@ given one.
 | | |
 |---|---|
 | `locator.neighbors(radius, points=None)` | every point within `radius` (inclusive) of each query, CSR `(offsets, ids)`; the queries are the points themselves, each leaving itself out, unless `points` (a host array of world positions, or a Tack array relative to the origin) are given |
-| `locator.nearest(k, points=None)` | the `k` nearest (`k` up to `MAX_K`, 32), `(ids, squared_distances)`, each `(m, k)`, nearest first, ties by index; -1 where the points run out. Rings of bins outwards until the k-th distance lies within those searched |
+| `locator.nearest(k, points=None)` | the `k` nearest (any `k`; up to 32 kept in private arrays, more in the output's rows), `(ids, squared_distances)`, each `(m, k)`, nearest first, ties by index; -1 where the points run out. Rings of bins outwards until the k-th distance lies within those searched |
 | `locator.grid()` | the sorted points and the grid as a device class, for one's own kernels: `span(x, r)`, `cell(x)`, `bin(i, j, k)`, `first(b)`, `end(b)`, `point(s)`, `offset(p, x)` (point `p` less `x`, to its nearest image in a periodic box) |
 
 `PointLocator(..., periodic=box)` takes a periodic box in world coordinates (a
@@ -466,7 +484,7 @@ and pass it on; without one, nothing changes (it is compiled out).
 |---|---|
 | `voxel_downsample(data, size, keep="centroid")` | one point per occupied voxel of side `size` (or three sides) anchored at the points' lower corner: the voxel's centroid (new points: floating-point fields averaged, integer fields its first point's; ghost marks dropped), its first point, or its point nearest the centroid (input points, in input order, fields and marks kept). Voxels by a stable sort, each reduced in index order: the same bits run to run, and the same voxels and kept points on every backend. VTK's `vtkVoxelGrid` fits a whole number of bins to the box, so its voxels are not exactly `size`; PDAL's `filters.voxeldownsize` is this |
 | `outliers(data, radius=, min_neighbors=)` | marks (`outlier`, u8) points with fewer than `min_neighbors` others within `radius`, with each point's count (`neighbors`): VTK's `vtkRadiusOutlierRemoval`, the same points |
-| `outliers(data, k=, deviations=1.0)` | marks points whose mean distance to their `k` nearest is more than `deviations` standard deviations above the mean of those means, with each one (`mean_distance`): VTK's `vtkStatisticalOutlierRemoval` and PCL, the same points, mean and deviation. Marked, not removed, as PDAL marks (class 7): `threshold_points(out, "outlier", 0, 0)` keeps the rest |
+| `outliers(data, k=, deviations=1.0)` | marks points whose mean distance to their `k` nearest is more than `deviations` standard deviations above the mean of those means, with each one (`mean_distance`): PCL's test; VTK's `vtkStatisticalOutlierRemoval` has the same mean and deviation and also removes points that far below the mean. Marked, not removed, as PDAL marks (class 7): `threshold_points(out, "outlier", 0, 0)` keeps the rest |
 | `surface_normals(data, consistent=True)` | a surface's polygons wound alike (each region as its first cell) and its unit normals: `cell_normals` (Newell's) and `normals` at the points (the cells' summed, made unit), as VTK's `vtkPolyDataNormals` without splitting; a non-orientable surface is refused |
 | `point_normals(data, k=None, radius=None, viewpoint=None, direction=(0, 0, 1))` | each point's unit normal from the covariance of its `k` nearest points (itself included) or those within `radius`: the eigenvector of the least eigenvalue, in closed form; signed toward `viewpoint` (a world position) or along `direction` (up). Zero with fewer than three neighbours, or on a line. VTK's `vtkPCANormalEstimation` agrees within 0.1° |
 | `connected_components(data, radius=, min_size=None)` | with `radius`, points within it of each other connect too: on a point cloud, Euclidean clusters (VTK's `vtkEuclideanClusterExtraction`, one to one) and friends-of-friends halos with the linking length. The radius hook walks the locator's bins (nothing stored per pair, each pair once). `min_size` makes regions of fewer points -1 and numbers the rest again |
@@ -917,6 +935,9 @@ build if two of them define the same name.
 
 ### What views offer
 
+[Views](../17-views.md) introduces them.
+
+
 Every view supports `for i in view` and `entity_id(i)`, the global id of
 the entity the loop is at. Names follow one rule per kind of answer:
 
@@ -962,7 +983,7 @@ side `s` and its local face number.
 
 | Field view | Methods |
 |---|---|
-| `H1`, `L2`, `Constant` | `value(c, pc)`, `parametric_gradient(c, pc)` at parametric coordinates; `dof(c, k)` |
+| `H1`, `L2`, `Constant` | `value(c, pc)`, `parametric_gradient(c, pc)` at parametric coordinates; `corner_value(c, j)`; the field's nodes, on cells with a reference element: `NODES` per cell, node `k`'s value `dof(c, k)`, its place in the array `dof_index(c, k)` and its parametric coordinates `node_parametric(k)` ([Work at a field's nodes](../05-mesh-kernels.md#work-at-a-fields-nodes)) |
 | `Values` | `at(i)` |
 | `SideTraces` | `trace(f, s, j)`, `value(f, s, pc)` |
 

@@ -115,7 +115,7 @@ def _take_rows(values, ids, out):
 def _take(values, ids):
     out = _like(values, ids.shape[0])
     if ids.shape[0]:
-        _take_rows(materialize(values), ids, out)
+        _take_rows(values, ids, out)
     return out
 
 
@@ -194,7 +194,7 @@ def _apply(values, how, oriented=False, field=None):
         extra = how.averages[0].shape[0] - 1 if how.averages is not None else 0
         out = _like(values, n + extra)
         if n:
-            _interpolate_rows(materialize(values), how.ends, how.weights, out)
+            _interpolate_rows(values, how.ends, how.weights, out)
             if how.exact is not None and field is not None:
                 how.exact(field, out)
         if extra:
@@ -442,16 +442,21 @@ def _carry_set(member, out, points, cells, faces, faces_to_cells, edges, edges_t
 
 
 def selected(data, fields):
-    """The names of ``data``'s fields that ``fields`` selects."""
-    names = list(data.fields)
+    """The keys of ``data``'s fields that ``fields`` selects (all of them for
+    ``None``): a name selects every field of that name, ``(name, space)`` the
+    one in that space."""
+    from tack.dataset.dataset import is_field_key
+
+    keys = list(data.fields)
     if fields is None:
-        return names
-    fields = [fields] if isinstance(fields, str) else list(fields)
-    missing = [name for name in fields if name not in names]
+        return keys
+    asked = [fields] if is_field_key(fields) else list(fields)
+    missing = [key for key in asked if key not in data.fields]
     if missing:
         raise KeyError(f"no field {', '.join(map(repr, missing))}: the dataset has "
-                       f"{', '.join(map(repr, names)) or 'none'}")
-    return [name for name in names if name in fields]
+                       f"{', '.join(map(repr, keys)) or 'none'}")
+    chosen = {id(field) for key in asked for field in data.fields._all(key)}
+    return [key for key in keys if id(data.fields[key]) in chosen]
 
 
 @on_inputs_device
