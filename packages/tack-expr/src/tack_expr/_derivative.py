@@ -119,7 +119,7 @@ class Derivative:
 
     def name(self, val, pos):
         p = self.p
-        if val in p.data.fields:
+        if p.has_field(val):
             return self.field(val, pos)
         if val in ("iHat", "jHat", "kHat", "pi", "true", "false"):
             code, t = p.name(val, pos)
@@ -133,7 +133,7 @@ class Derivative:
             unit = ", ".join("1.0" if j == k else "0.0" for j in range(3))
             return self.emit(f"{x}[{k}]", S), S, f"tack.vec3({unit})"
         base, _, comp = val.rpartition("_")
-        if comp in ("X", "Y", "Z") and base in p.data.fields:
+        if comp in ("X", "Y", "Z") and p.has_field(base):
             a, t, J = self.field(base, pos)
             self.need(t, V, pos)
             k = "XYZ".index(comp)

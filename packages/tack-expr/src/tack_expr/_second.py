@@ -150,7 +150,7 @@ class Second:
 
     def name(self, val, pos):
         p = self.p
-        if val in p.data.fields:
+        if p.has_field(val):
             return self.field(val, pos)
         if val in ("pi", "true", "false"):
             return self.const(p.name(val, pos)[0])
@@ -163,7 +163,7 @@ class Second:
                       None) for k in range(3)]
             return self.vec(comps) if val == "coords" else comps["XYZ".index(val[-1])]
         base, _, comp = val.rpartition("_")
-        if comp in ("X", "Y", "Z") and base in p.data.fields:
+        if comp in ("X", "Y", "Z") and p.has_field(base):
             return self.vector(self.field(base, pos), pos).comps["XYZ".index(comp)]
         raise p.failure(f"unknown name '{val}'", pos)
 

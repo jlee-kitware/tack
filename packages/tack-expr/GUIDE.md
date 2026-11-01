@@ -21,6 +21,45 @@ imported; modules unused for 30 days are removed at import (`TACK_EXPR_CACHE_DAY
 expressions that differ only in their numbers share a kernel; no text the user typed reaches the
 source.
 
+## Python operators
+
+The same expressions can be written with Python operators on `td.Field`s, which importing
+`tack_expr` gives them:
+
+```python
+import numpy as np
+import tack_expr as fx
+
+U, V, W, T = (data.fields[n] for n in ("U", "V", "W", "T"))
+expr = U + V / fx.curl(W)
+result = expr.eval(data)                                    # at cell centers
+speed = fx.mag(U).eval(data, at="points")
+wave = (np.sin(T) * 2 + fx.where(T > 0.5, T, 0)).eval(data, at="points")
+q = fx.qcrit(U).compile(data)                               # call q(data) as often as U changes
+surface = (T * T + fx.mag2(U)).contour(data, 1.0)           # evaluated where the contour reads it
+```
+
+An expression is a tree of operations on the functions its fields represent, evaluated at the
+location asked for, so `U * V` of order-2 fields is the product of the two functions at each
+output node. `eval`, `compile`, `field`, `contour` and `function` write it in the calculator
+syntax and compile it as text is compiled; `str(expr)` shows the text. The dataset passed in
+gives the topology and the geometry, and every field must be on its topology.
+
+A `td.Field` in an expression is that field, read wherever the expression runs, whether or not
+`data.fields` holds it. `fx.ref("T")` is whatever `data.fields["T"]` is when it runs: a field the
+solver replaces between calls, or each piece's own field over a `td.PartitionedDataSet`, which
+takes refs only.
+
+`+ - * / ** %`, unary `-`, `abs()`, `[k]` for a component and `.x .y .z` on expressions, and the
+comparisons `< <= > >=` make expressions; `&`, `|` and `~` combine conditions, and
+`fx.where(condition, a, b)` chooses. `==`, `and`, `or`, `not` and chained comparisons are
+Python's own and are not expressions. NumPy's ufuncs (`np.sqrt`, `np.sin`, `np.arctan2`,
+`np.minimum`, ...) make expressions of fields. The calculator's functions are `fx.grad`,
+`fx.div`, `fx.curl`, `fx.qcrit`, `fx.laplacian`, `fx.mag`, `fx.mag2`, `fx.norm`, `fx.dot`,
+`fx.cross`, `fx.clamp`, `fx.minimum`, `fx.maximum`, `fx.vec`, `fx.coords` and `fx.pi`, and
+`fx.cells`, `fx.points`, `fx.owner`, `fx.neighbor` and `fx.fsum` of a field. `fx.compile_many`
+takes expressions and text alike. `tests/test_expr_operators.py` checks each against the text.
+
 ## Locations
 
 `at` is `"cells"`, `"points"`, `"faces"`, or a space: `L2` of any order, or `H1` for an expression

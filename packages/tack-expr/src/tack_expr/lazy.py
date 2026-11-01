@@ -117,7 +117,7 @@ def contour(text, data, value, subdivision=None, **kwargs):
     or with exact=False the crossing of the lattice values. With no Bernstein bound to skip
     cells by, every cell is refined."""
     f = field(text, data)
-    orders = [getattr(data.fields[n].space, "order", 1) for n in sorted(_names(text, data))]
+    orders = [getattr(f.space, "order", 1) for f in _fields(text, data)]
     order = max([1] + [o for o in orders if isinstance(o, int)])
     if subdivision is None and order > 1:
         subdivision = order
@@ -126,8 +126,8 @@ def contour(text, data, value, subdivision=None, **kwargs):
     return td.contour(data, f, value, **kwargs)
 
 
-def _names(text, data):
+def _fields(text, data):
     c = P._Compiler(text, data, "cells")
     c.parse()
-    return c.fields_read
+    return [c.lookup(n, 0) for n in sorted(c.fields_read)]
 
