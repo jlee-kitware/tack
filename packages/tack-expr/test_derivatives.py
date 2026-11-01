@@ -7,9 +7,9 @@ all held exactly by order-2 H1 fields, so every expression's derivative is known
 import sys
 
 import numpy as np
+
 import tack
 import tack.dataset as td
-
 import tack_expr as fx
 
 device = sys.argv[1] if len(sys.argv) > 1 else "cuda"

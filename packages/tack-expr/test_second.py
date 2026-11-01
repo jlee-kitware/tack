@@ -11,9 +11,9 @@ by their H1 fields on a uniform grid, whose cells map affinely.
 import sys
 
 import numpy as np
+
 import tack
 import tack.dataset as td
-
 import tack_expr as fx
 
 device = sys.argv[1] if len(sys.argv) > 1 else "cuda"
@@ -57,7 +57,7 @@ def lap(f):
 
 
 def div(F):
-    return lambda x: sum(d(lambda y: F(y)[..., k], k)(x) for k in range(3))
+    return lambda x: sum(d(lambda y, k=k: F(y)[..., k], k)(x) for k in range(3))
 
 
 def curl(F):

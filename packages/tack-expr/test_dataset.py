@@ -3,17 +3,21 @@
 import sys
 
 import numpy as np
-import tack
-import tack.dataset as td
-from tack.interop.vtk import vtk_to_dataset
+from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 from vtkmodules.vtkCommonCore import VTK_DOUBLE, vtkObject
 from vtkmodules.vtkCommonDataModel import vtkImageData
-from vtkmodules.vtkFiltersCore import (vtkAppendFilter, vtkArrayCalculator,
-                                       vtkCellDataToPointData, vtkPointDataToCellData)
+from vtkmodules.vtkFiltersCore import (
+    vtkAppendFilter,
+    vtkArrayCalculator,
+    vtkCellDataToPointData,
+    vtkPointDataToCellData,
+)
 from vtkmodules.vtkFiltersGeneral import vtkDataSetTriangleFilter
-from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 
+import tack
+import tack.dataset as td
 import tack_expr as fx
+from tack.interop.vtk import vtk_to_dataset
 
 device = sys.argv[1] if len(sys.argv) > 1 else "cuda"
 tack.set_default_device(device)

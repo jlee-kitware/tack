@@ -4,13 +4,14 @@ import sys
 import time
 
 import numpy as np
-import tack
-import tack.dataset as td
-from tack.interop.vtk import vtk_to_dataset
 from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 from vtkmodules.vtkCommonCore import vtkIdList, vtkObject
 from vtkmodules.vtkCommonDataModel import vtkImageData
 from vtkmodules.vtkFiltersCore import vtkAppendFilter, vtkCellDataToPointData
+
+import tack
+import tack.dataset as td
+from tack.interop.vtk import vtk_to_dataset
 
 try:
     from vtkmodules.vtkFiltersCore import vtkExtractCells

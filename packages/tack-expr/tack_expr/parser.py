@@ -27,6 +27,7 @@ import re
 import time
 
 import numpy as np
+
 import tack
 import tack.dataset as td
 from tack.arrays import materialize
@@ -226,6 +227,10 @@ class _Compiler:
     def error(self, message, pos):
         raise ExprError(message, pos, self.text)
 
+    def failure(self, message, pos):
+        """The error for message at pos, for a caller to raise."""
+        return ExprError(message, pos, self.text)
+
     def need(self, got, want, pos):
         if got != want:
             self.error(f"expected a {want}, got a {got}", pos)
@@ -288,7 +293,7 @@ class _Compiler:
                 ("points", "cells"): f"points({name})"}.get((here, where), "a conversion")
         if here == "points" and kind == "basis":
             self.error(f"'{name}' is not continuous; use points({name}) for point values", pos)
-        self.error(f"'{name}' is on {where}, the expression is on {here}; use {hint}", pos)
+        raise self.failure(f"'{name}' is on {where}, the expression is on {here}; use {hint}", pos)
 
     def cells_of(self, name, pos):
         """cells(T): each cell's mean of its corner values, inside the kernel."""
@@ -366,8 +371,8 @@ class _Compiler:
             f"    gy{k} = iy{k} - 1 + (n{k} // 2) % 2",
             f"    gz{k} = iz{k} - 1 + n{k} // 4",
             f"    ok{k} = {ok}",
-            f"    cell{k} = min(max(gx{k}, 0), {D}[3] - 1) + {D}[3] * (min(max(gy{k}, 0), {D}[4] - 1)"
-            f" + {D}[4] * min(max(gz{k}, 0), {D}[5] - 1))",
+            (f"    cell{k} = min(max(gx{k}, 0), {D}[3] - 1) + {D}[3] * (min(max(gy{k}, 0), {D}[4] - 1)"
+             f" + {D}[4] * min(max(gz{k}, 0), {D}[5] - 1))"),
             f"    s{k} += ok{k} * {a}[cell{k}]",
             f"    w{k} += ok{k}",
         ]
@@ -508,7 +513,7 @@ class _Compiler:
                 return self.emit(f"-{a}", t)
             self.need(t, S, pos)
             return self.emit(f"tack.select({a} == 0.0, 1.0, 0.0)", S)
-        self.error("the expression ends too early" if kind == "end" else f"unexpected '{val}'", pos)
+        raise self.failure("the expression ends too early" if kind == "end" else f"unexpected '{val}'", pos)
 
     def name(self, val, pos):
         if val in self.data.fields:
@@ -530,7 +535,7 @@ class _Compiler:
             a, t = self.field(base, pos)
             self.need(t, V, pos)
             return self.emit(f"{a}[{'XYZ'.index(comp)}]", S)
-        self.error(f"unknown name '{val}'", pos)
+        raise self.failure(f"unknown name '{val}'", pos)
 
     def coords(self, pos):
         if self.mode == "faces":
@@ -653,7 +658,7 @@ class _Compiler:
         if fn == "not":
             check(S)
             return self.emit(f"tack.select({c[0]} == 0.0, 1.0, 0.0)", S)
-        self.error(f"unknown function '{fn}'", pos)
+        raise self.failure(f"unknown function '{fn}'", pos)
 
     def infix(self, tok, left):
         _, op, pos = tok
@@ -919,7 +924,7 @@ class Compiled:
         elif self.mode == "nodes":
             kinds = [kind for kind, _ in self.args]
             fields = [p for kind, p in zip(kinds, payloads) if kind == "field"]
-            for group in data.launch_groups("cells", fields + [results[0]]):
+            for group in data.launch_groups("cells", [*fields, results[0]]):
                 if not group.count:
                     continue
                 variant, nodes = _node_variant(self.space, group.shape)
@@ -981,7 +986,9 @@ def _compile(texts, data, at, replace_invalid, names):
     params += outs + [f"c{k}" for k in range(len(c.consts))]
     head = _imports(c) + "\n\n@tack.kernel\ndef fx(" + ", ".join(params) + "):\n"
 
-    def make(variant, lines=list(c.lines), results=results, uses_pc=c.uses_pc, reference=c.reference):
+    lines, uses_pc, reference = list(c.lines), c.uses_pc, c.reference
+
+    def make(variant):
         count = variant if mode == "nodes" else ("dom.NUM_POINTS" if reference else "")
         source = head + "\n".join("    " + line for line in _loop(mode, lines, results, uses_pc, count)) + "\n"
         return source, _load(source, "fx")
@@ -1093,7 +1100,7 @@ def function(text, data, at="cells"):
     if at == "faces":
         signature = "value(self, dom, f)"
         body = ["e = dom.entity_id(f)", "s0 = dom.side_cell(f, 0)", "s1 = dom.side_cell(f, 1)",
-                "s1 = s1 if s1 >= 0 else s0"] + body
+                "s1 = s1 if s1 >= 0 else s0", *body]
     else:
         signature = "value(self, dom, c, pc)"
     source = (_imports(c) + "\n\n@tack.device_class\nclass Fx:\n"
