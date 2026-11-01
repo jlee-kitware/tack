@@ -91,6 +91,69 @@ def test_hcurl_reproduces_constants(backend, pc):
     np.testing.assert_allclose(values.numpy(), expected, rtol=1e-5, atol=1e-5)
 
 
+@tack.func
+def _rotation(x):
+    return tack.vec3(-x[1], x[0], 0.0)
+
+
+@tack.func
+def _bilinear(x):
+    return tack.vec3(x[1] * x[2], 0.0, 0.0)
+
+
+@tack.kernel
+def _edge_integrals_of(edges, which, out):
+    for i in edges:
+        x0 = edges.corner_position(i, 0)
+        x1 = edges.corner_position(i, 1)
+        m = 0.5 * (x0 + x1)
+        f = _rotation(m) if which == 0 else _bilinear(m)
+        out[edges.entity_id(i)] = f.dot(x1 - x0)
+
+
+@tack.kernel
+def _hcurl_curl_at(cells, u, px, py, pz, values, positions):
+    for c in cells:
+        pc = tack.vec3(px, py, pz)
+        values[cells.entity_id(c)] = td.hcurl_curl(cells, u, c, pc)
+        positions[cells.entity_id(c)] = cells.position(c, pc)
+
+
+@pytest.mark.parametrize("pc", POINTS)
+@pytest.mark.parametrize("which", [0, 1])
+def test_hcurl_values_and_curls(backend, pc, which):
+    """(-y, x, 0), curl (0, 0, 2), and (y z, 0, 0), curl (0, y, -z): both in the space."""
+    data = _grid()
+    space = td.HCurl(data)
+    integrals = tack.empty((space.size,), data.dtype)
+    td.for_each(_edge_integrals_of, data, "edges", which, integrals)
+    u = td.Field(space, integrals)
+    values = tack.empty((data.num_cells,), tack.vec3(data.dtype))
+    curls = tack.empty((data.num_cells,), tack.vec3(data.dtype))
+    positions = tack.empty((data.num_cells,), tack.vec3(data.dtype))
+    td.for_each(_hcurl_at, data, "cells", u, *pc, values, positions)
+    td.for_each(_hcurl_curl_at, data, "cells", u, *pc, curls, positions)
+    x = positions.numpy()
+    zero = np.zeros(len(x))
+    if which == 0:
+        value = np.stack([-x[:, 1], x[:, 0], zero], axis=1)
+        curl = np.tile([0.0, 0.0, 2.0], (len(x), 1))
+    else:
+        value = np.stack([x[:, 1] * x[:, 2], zero, zero], axis=1)
+        curl = np.stack([zero, x[:, 1], -x[:, 2]], axis=1)
+    np.testing.assert_allclose(values.numpy(), value, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(curls.numpy(), curl, rtol=1e-5, atol=1e-5)
+
+
+def test_h1_node_queries():
+    data = td.uniform_grid((3, 3, 3))
+    hexa = next(g.shape for g in data.topology.groups() if g.count)
+    two = td.H1(data, order=2)
+    assert not two.reads_any_order(hexa)
+    assert two.quadratic_count(hexa) == hexa.NUM_QUADRATIC
+    assert td.H1(data, order=3).reads_any_order(hexa)
+
+
 def test_world_gradient_is_public():
     module = importlib.import_module("tack.dataset.algorithms.gradients")
     assert td.world_gradient is module._world_gradient

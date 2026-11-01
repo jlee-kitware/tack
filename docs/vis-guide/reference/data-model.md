@@ -166,6 +166,8 @@ algorithms that work on them are in [Algorithms](algorithms.md).
 
 ::: tack.dataset.hcurl_value
 
+::: tack.dataset.hcurl_curl
+
 ## Filters of your own
 
 What the built-in filters are written with. A filter that makes a new

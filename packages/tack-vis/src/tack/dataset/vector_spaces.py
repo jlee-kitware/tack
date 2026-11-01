@@ -20,7 +20,7 @@ keeps tangential integrals.
 import tack
 from tack.dataset.spaces import Space
 
-__all__ = ["HCurl", "HDiv", "hcurl_value", "hdiv_value"]
+__all__ = ["HCurl", "HDiv", "hcurl_curl", "hcurl_value", "hdiv_value"]
 
 
 def _check_shape(space, group):
@@ -66,6 +66,26 @@ class _HCurlField:
                 w = w * (1.0 if d[a] * d[a] > 0.25 else across)
             integral = self.get(self.edge_id(c, e)) * float(self.edge_sign(c, e))
             v += d * (w * integral)
+        return v
+
+    @tack.func
+    def parametric_curl(self, c, pc):
+        """The curl in the reference cell. An edge's function is its direction d times a
+        weight w across the other two axes, so its curl is grad(w) x d."""
+        v = tack.vec3(0.0, 0.0, 0.0)
+        for e in range(12):
+            p0 = self.parametric_point(self.edge_corner(e, 0))
+            d = self.parametric_point(self.edge_corner(e, 1)) - p0
+            # w's factor on each axis across the edge, and 1 along it.
+            f = tack.vec3(1.0 if d[0] * d[0] > 0.25 else p0[0] * pc[0] + (1.0 - p0[0]) * (1.0 - pc[0]),
+                          1.0 if d[1] * d[1] > 0.25 else p0[1] * pc[1] + (1.0 - p0[1]) * (1.0 - pc[1]),
+                          1.0 if d[2] * d[2] > 0.25 else p0[2] * pc[2] + (1.0 - p0[2]) * (1.0 - pc[2]))
+            s = 2.0 * p0 - 1.0
+            g = tack.vec3(0.0 if d[0] * d[0] > 0.25 else s[0] * f[1] * f[2],
+                          0.0 if d[1] * d[1] > 0.25 else f[0] * s[1] * f[2],
+                          0.0 if d[2] * d[2] > 0.25 else f[0] * f[1] * s[2])
+            integral = self.get(self.edge_id(c, e)) * float(self.edge_sign(c, e))
+            v += g.cross(d) * integral
         return v
 
 
@@ -133,6 +153,13 @@ def hdiv_value(cells, u, c, pc):
     """An HDiv field's value in the world: J v / det J, the map that keeps fluxes."""
     J = cells.geometry_jacobian(c, pc)
     return (J @ u.parametric_value(c, pc)) / J.determinant()
+
+
+@tack.func
+def hcurl_curl(cells, u, c, pc):
+    """An HCurl field's curl in the world: J curl_ref / det J."""
+    J = cells.geometry_jacobian(c, pc)
+    return (J @ u.parametric_curl(c, pc)) / J.determinant()
 
 
 @tack.func
