@@ -8,7 +8,8 @@ An expression is evaluated at an output location:
   a space   an L2 space (any shape with a reference element), or an H1 space
             for an expression of continuous fields: one value per node
 
-Fields are tack.dataset fields named in data.fields. A field with a basis is
+Fields are tack.dataset fields named in data.fields, or bound to names for a
+compilation by bound(), which the operator expressions of ops use. A field with a basis is
 evaluated through its basis at the output's parametric coordinate; values on
 cells, points or faces are read by entity. Data on other entities needs an
 explicit operator: points(), cells(), owner(), neighbor() or fsum().
@@ -20,6 +21,8 @@ arguments, and no user text reaches it. It is written to a module in a cache
 directory and imported, so @tack.kernel compiles it like any other kernel.
 """
 
+import contextlib
+import contextvars
 import hashlib
 import importlib.util
 import os
@@ -46,6 +49,20 @@ CACHE_DIR = os.environ.get("TACK_EXPR_CACHE",
                            os.path.join(os.path.expanduser("~"), ".cache", "tack_expr"))
 # Generated modules unused for this many days are removed when tack_expr is imported (0: never).
 CACHE_DAYS = float(os.environ.get("TACK_EXPR_CACHE_DAYS", "30"))
+
+
+_BINDINGS = contextvars.ContextVar("tack_expr_bindings", default=None)
+
+
+@contextlib.contextmanager
+def bound(fields):
+    """Within it, names in the expressions compiled resolve to these td.Fields before
+    data.fields', and what is compiled keeps reading them."""
+    token = _BINDINGS.set(dict(fields))
+    try:
+        yield
+    finally:
+        _BINDINGS.reset(token)
 
 
 class ExprError(ValueError):
@@ -134,6 +151,7 @@ class _Compiler:
         self.uses_hdiv_div = False
         self.fields_read = set()
         self.uses_pc = False
+        self.bindings = _BINDINGS.get() or {}
 
     # --- emission -------------------------------------------------------
 
@@ -155,9 +173,14 @@ class _Compiler:
             return materialize(getattr(got, "values", got))
         return self.arg("array", key, values)
 
-    @staticmethod
-    def by_name(name):
+    def by_name(self, name):
+        if name in self.bindings:
+            field = self.bindings[name]
+            return lambda d, m: field
         return lambda d, m: d.fields[name]
+
+    def has_field(self, name):
+        return name in self.bindings or name in self.data.fields
 
     @staticmethod
     def once(key, make):
@@ -238,10 +261,10 @@ class _Compiler:
     # --- fields ---------------------------------------------------------
 
     def lookup(self, name, pos):
-        if name not in self.data.fields:
+        if not self.has_field(name):
             self.error(f"unknown field '{name}'", pos)
         self.fields_read.add(name)
-        return self.data.fields[name]
+        return self.bindings[name] if name in self.bindings else self.data.fields[name]
 
     def field(self, name, pos, field=None, key=None, getter=None):
         """A field read at the output location, or an error saying what to use."""
@@ -516,7 +539,7 @@ class _Compiler:
         raise self.failure("the expression ends too early" if kind == "end" else f"unexpected '{val}'", pos)
 
     def name(self, val, pos):
-        if val in self.data.fields:
+        if self.has_field(val):
             return self.field(val, pos)
         if val in ("iHat", "jHat", "kHat"):
             j = "ijk".index(val[0])
@@ -531,7 +554,7 @@ class _Compiler:
                 return x
             return self.emit(f"{x[0]}[{'XYZ'.index(val[-1])}]", S)
         base, _, comp = val.rpartition("_")
-        if comp in ("X", "Y", "Z") and base in self.data.fields:
+        if comp in ("X", "Y", "Z") and self.has_field(base):
             a, t = self.field(base, pos)
             self.need(t, V, pos)
             return self.emit(f"{a}[{'XYZ'.index(comp)}]", S)
