@@ -80,13 +80,13 @@ rarely do.
 
 **A safe interface for agents and steering.** An expression is text in a small language: it is
 checked before anything runs, it cannot execute arbitrary code, no user text reaches the generated
-source, and an error names its column. That is what lets the CFD assistant add helicity to a
-running solver and report a bad request back in words. For agent-driven analysis, at SC26 and
+source, and an error names its column. That lets an assistant add a field such as helicity to a
+running solver through Catalyst steering, and report a bad request back in words. For agent-driven analysis, at SC26 and
 after, this is the most visible value.
 
 **Derived fields in situ at little cost.** Expressions at one location fuse into one kernel, within
 a few percent of hand-written code and three times faster than one kernel per operation; four
-derived fields cost `tack-lbm` about 0.2% of its run.
+derived fields cost a lattice Boltzmann solver about 0.2% of its run.
 
 **Pieces worth having in Tack on their own.** `HDiv` and `HCurl`, the public `world_gradient` and
 `H1` node queries, and contouring fields evaluated on demand are useful to any `tack.dataset` user,
@@ -264,14 +264,7 @@ it into `H1`.
 
 ## How it works
 
-```mermaid
-flowchart LR
-    A["Expression text<br/>mag(curl(V))"] --> B["Parse<br/>types and locations checked"]
-    B --> C["Kernel source<br/>one assignment per operation"]
-    C --> D["Cached module<br/>named by a hash of the source"]
-    D --> E["@tack.kernel<br/>compiled once per structure"]
-    E --> F["td.for_each<br/>field views, constants and<br/>target space per launch group"]
-```
+![An expression compiles once per structure, then runs as one kernel](how-it-works.svg)
 
 The kernel source depends on the expression's structure, the output location and how each field
 is read. When that combination was already compiled in the same process, only the parser runs and
@@ -378,33 +371,6 @@ location into one kernel, so four derived fields of a velocity field on a 192 x 
 0.20 ms rather than 0.62 ms. `points()` of cell data averages inside the kernel on every mesh:
 0.03 ms on the same grid, against 0.39 ms for `td.project` and a second kernel.
 
-## Integrations
-
-Three branches use field expressions in running code.
-
-**tack-lbm, branch `field-expressions`.** The Catalyst grid channel carries `vorticity`
-(`mag(curl(velocity))`) and `q_criterion` (`qcrit(velocity)`) as element fields, evaluated on the
-output grid at each Catalyst call. `--derive NAME=EXPRESSION[@cells]` adds more, and so can a Live
-client while the solver runs: a second steering proxy, `LBMDerived`, takes the text, the solver
-compiles it at the next Catalyst call, and the `derived_error` monitor gives the column of an
-error. The expressions at each location share one kernel. On a 128 x 64 x 32 grid, both default
-fields match `td.gradients` with `td.flow_quantities` to 7e-8 and an independent NumPy cell-center
-difference to 3e-6; four fields take 0.44 ms per Catalyst call, and at the default size 0.50 ms
-against 2.59 ms per solver step.
-
-**trame-cfd-mcp, branch `field-expressions`.** A steering property marked as text is reported and
-set as text, so the CFD assistant can add a field such as helicity in conversation. Driven through
-the assistant's own tools, a request for
-`helicity=dot(velocity, curl(velocity))@cells; cp=2 * pressure / 0.0064` put both fields on the
-live grid channel within a Catalyst call, and a bad expression came back as an error while the
-previous fields stayed.
-
-**tack-demos, branch `field-expressions`.** The sidebar takes an expression and colors the image,
-isosurface or tubes by it. An expression with gradients is evaluated at cell centers and averaged
-to the points for display, and the app says so under the box. "Show kernel" includes the generated
-kernel, and errors show their column. Every demo's colored values match NumPy, and the app's apply
-handler was exercised headlessly with renders checked by eye.
-
 ## Limitations and open questions
 
 - **Vector spaces above order 1 on simplices.** `HDiv` and `HCurl` above order 1 are on hexahedra
@@ -419,8 +385,6 @@ handler was exercised headlessly with renders checked by eye.
   bound to skip cells by, as a stored field does.
 - **Ghost exchange across MPI ranks is untested here.** `update_ghosts=True` uses Tack's exchange,
   tested in one process; `mpi4py` is not installed on the Spark.
-- **Steering status is per request.** The `derived_status` channel holds the outcome of the last
-  steering request only.
 - **Host overhead per call.** About 65 microseconds per launch goes to `td.for_each`'s setup;
   `compile_many` shares one launch among several expressions.
 - **Metal.** Tack's Metal backend has no float64, so float64 expressions run on the other backends
@@ -428,18 +392,14 @@ handler was exercised headlessly with renders checked by eye.
 
 ## Plan
 
-Everything in this document is implemented and tested on the Spark. The Tack branch, with
-`tack-expr` in it as `packages/tack-expr`, is on the public fork
-[jlee-kitware/tack](https://github.com/jlee-kitware/tack/tree/field-expression-support), so changes
-to Tack core can be discussed before any pull request. The other branches are local.
+Everything in this document is implemented and tested. It lives on the `field-expression-support`
+branch of [jlee-kitware/tack](https://github.com/jlee-kitware/tack/tree/field-expression-support),
+a fork of Tack, so changes to Tack core can be discussed before any pull request:
 
-| Repository | Where | What |
-| --- | --- | --- |
-| tack | `field-expression-support` on jlee-kitware/tack | public `world_gradient` and `H1` node queries; `HDiv` and `HCurl`; contour of evaluated and continuous spaces; tests, reference entries and changelog fragments |
-| tack-expr | `packages/tack-expr` on the same branch, a package of its own | the compiler, first and second derivatives, `compile_many`, expression fields and contours, ghost refresh; nine test scripts and this document as its README |
-| tack-lbm | branch `field-expressions`, local | derived fields in the Catalyst grid channel, one kernel per location, steerable from a Live client with a status channel |
-| trame-cfd-mcp | branch `field-expressions`, local | text steering parameters and their outcome for the CFD assistant |
-| tack-demos | branch `field-expressions`, local | the expression box on every demo, particles included |
+| Where | What |
+| --- | --- |
+| Tack itself | public `world_gradient` and `H1` node queries; `HDiv` and `HCurl`; contour of evaluated and continuous spaces; tests, reference entries and changelog fragments |
+| `packages/tack-expr` | the compiler, first and second derivatives, `compile_many`, expression fields and contours, ghost refresh; nine test scripts and this document |
 
 The next steps:
 
