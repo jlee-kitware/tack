@@ -136,7 +136,7 @@ check("grad(cells(u) * u) = cells(u) grad(u)", fx.evaluate("grad(cells(u) * u)",
       cu[:, None] * jac(u, xc))
 
 print("refused:")
-for expr in ("grad(grad(u)[0])", "grad(U * 2)", "div(u * v)", "grad(u + 1)" ):
+for expr in ("grad(laplacian(u))", "grad(U * 2)", "div(u * v)", "grad(u + 1)"):
     try:
         fx.compile_expression(expr, data, at="cells")
         ok = expr == "grad(u + 1)"

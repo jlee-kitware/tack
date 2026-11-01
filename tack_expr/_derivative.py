@@ -184,8 +184,10 @@ class Derivative:
         p = self.p
         if fn in ("grad", "div", "curl"):
             return self.second(fn, pos)
-        if fn in ("qcrit", "laplacian"):
-            self.error(f"{fn}() inside a derivative is a third derivative, which is not implemented", pos)
+        if fn == "laplacian":
+            self.error("laplacian() inside a derivative is a third derivative, which is not implemented", pos)
+        if fn == "qcrit":
+            self.error("qcrit() inside a derivative is not implemented; take derivatives of its terms", pos)
         if fn in ("cells", "fsum"):
             name, npos = self.field_arg(fn)
             code, t = p.cells_of(name, npos) if fn == "cells" else p.fsum(name, npos)

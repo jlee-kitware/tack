@@ -43,6 +43,8 @@ S, V = "scalar", "vector"
 
 CACHE_DIR = os.environ.get("TACK_EXPR_CACHE",
                            os.path.join(os.path.expanduser("~"), ".cache", "tack_expr"))
+# Generated modules unused for this many days are removed when tack_expr is imported (0: never).
+CACHE_DAYS = float(os.environ.get("TACK_EXPR_CACHE_DAYS", "30"))
 
 
 class ExprError(ValueError):
@@ -128,6 +130,8 @@ class _Compiler:
         self.uses_vector_spaces = False
         self.uses_derivatives = False
         self.uses_hcurl_curl = False
+        self.uses_hdiv_div = False
+        self.fields_read = set()
         self.uses_pc = False
 
     # --- emission -------------------------------------------------------
@@ -231,6 +235,7 @@ class _Compiler:
     def lookup(self, name, pos):
         if name not in self.data.fields:
             self.error(f"unknown field '{name}'", pos)
+        self.fields_read.add(name)
         return self.data.fields[name]
 
     def field(self, name, pos, field=None, key=None, getter=None):
@@ -244,7 +249,7 @@ class _Compiler:
         constant = kind == "values-cells" or isinstance(field.space, td.Constant)
         if self.continuous_only and kind == "basis" and not isinstance(field.space, td.H1):
             self.error(f"'{name}' is not continuous, and the output space is H1; evaluate into "
-                       "an L2 space and td.project the result into H1", pos)
+                       "an L2 space and td.project the result into H1, or pass project=True", pos)
         if mode in ("cells", "nodes") and constant:
             return self.load(key, f"{self.raw(key, getter)}[dom.entity_id(c)]", t)
         if kind in ("hdiv", "hcurl"):
@@ -407,6 +412,10 @@ class _Compiler:
                        "averaging over cells (td.gradients(at='points'))", pos)
         field = field if field is not None else self.lookup(name, pos)
         getter = getter or self.by_name(name)
+        if _kind(field) == "hdiv" and fn == "div" and hasattr(td, "hdiv_div"):
+            self.uses_hdiv_div = True
+            u = self.arg("field", name, getter)
+            return self.load(f"div:{name}", f"hdiv_div(dom, {u}, c, {self.pc(pos)})", S)
         if _kind(field) == "hdiv" and fn == "div":
             # Each face function's reference divergence is 1: div = sum of outward fluxes / det J.
             pc = self.pc(pos)
@@ -828,6 +837,11 @@ def _load(source, name):
         if not os.path.exists(path):
             with open(path, "w") as f:
                 f.write(source)
+        else:
+            try:
+                os.utime(path)          # marks it used, for clear_cache's age
+            except OSError:
+                pass
         spec = importlib.util.spec_from_file_location(f"tack_expr_fx_{key}", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -843,6 +857,8 @@ def _imports(c):
         imports += "from tack_expr import _ad as ad\n"
     if c.uses_hcurl_curl:
         imports += "from tack.dataset import hcurl_curl\n"
+    if c.uses_hdiv_div:
+        imports += "from tack.dataset import hdiv_div\n"
     return imports + (_GRADIENT_IMPORT if c.uses_world_gradient else "")
 
 
@@ -971,7 +987,9 @@ def _compile(texts, data, at, replace_invalid, names):
         return source, _load(source, "fx")
 
     text = texts[0] if names is None else "; ".join(f"{n}={t}" for n, t in zip(names, texts))
-    return Compiled(text, make, mode, space, list(c.args), list(c.consts), types, names)
+    compiled = Compiled(text, make, mode, space, list(c.args), list(c.consts), types, names)
+    compiled.fields = sorted(c.fields_read)
+    return compiled
 
 
 def compile_expression(text, data, at="cells", replace_invalid=None):
@@ -992,7 +1010,15 @@ def compile_many(expressions, data, at="cells", replace_invalid=None):
     return _compile([expressions[n] for n in names], data, at, replace_invalid, names)
 
 
-def evaluate(text, data, at="cells", replace_invalid=None, name=None):
+def _exchangeable(field):
+    """A field td.update_ghosts refreshes: explicit values on points or cells."""
+    space = field.space
+    on_points = (isinstance(space, td.H1) and space.order == 1) or (isinstance(space, td.Values) and space.on == "points")
+    on_cells = isinstance(space, td.Constant) or (isinstance(space, td.Values) and space.on == "cells")
+    return (on_points or on_cells) and isinstance(field.values, tack.Array)
+
+
+def evaluate(text, data, at="cells", replace_invalid=None, name=None, update_ghosts=False, project=False):
     """Evaluate text over data's fields at 'cells', 'points', 'faces' or a space.
 
     Returns a td.Field in the output space; with name, also stores it in data.fields.
@@ -1000,11 +1026,33 @@ def evaluate(text, data, at="cells", replace_invalid=None, name=None):
     data may be a td.PartitionedDataSet: the expression runs on each piece, at may
     then be a function of the piece giving its space, and a list of fields comes
     back. With a ghost layer around each piece, the values each piece owns are the
-    whole mesh's, conversions and face operators at the cuts included."""
+    whole mesh's, conversions and face operators at the cuts included. For pieces
+    made by td.ghost_cells or td.ghost_points, update_ghosts=True first refreshes the
+    ghost values of the point and cell fields the expression reads, from the pieces
+    that own them (across MPI ranks as well), so a chain of evaluations stays right
+    on the ghost layer too.
+
+    project=True with an H1 output evaluates into L2 of the same order and averages
+    into H1 with td.project, for expressions of fields that are not continuous."""
     if isinstance(data, td.PartitionedDataSet):
-        return [evaluate(text, piece, at(piece) if callable(at) else at, replace_invalid, name)
-                for piece in data]
-    field = compile_expression(text, data, at, replace_invalid)(data)
+        pieces = list(data)
+        if update_ghosts and pieces:
+            first = compile_expression(text, pieces[0], at(pieces[0]) if callable(at) else at, replace_invalid)
+            names = [n for n in first.fields if _exchangeable(pieces[0].fields[n])]
+            if names:
+                td.update_ghosts(data, *names)
+        return [evaluate(text, piece, at(piece) if callable(at) else at, replace_invalid, name,
+                         project=project) for piece in pieces]
+    if project and isinstance(at, td.H1):
+        try:
+            staging = td.L2(data, order=max(at.order, 1))
+            staged = compile_expression(text, data, staging, replace_invalid)(data)
+        except (TypeError, ValueError, NotImplementedError):
+            staging = td.L2(data, order=max(at.order, 1), basis="equispaced")
+            staged = compile_expression(text, data, staging, replace_invalid)(data)
+        field = td.project(data, staged, at)
+    else:
+        field = compile_expression(text, data, at, replace_invalid)(data)
     if name is not None:
         data.fields[name] = field
     return field
@@ -1082,8 +1130,15 @@ def clear_cache(older_than_days=None):
     for name in os.listdir(CACHE_DIR):
         path = os.path.join(CACHE_DIR, name)
         if name.startswith("fx_") and name.endswith(".py"):
-            if cutoff is None or os.path.getatime(path) < cutoff:
+            if cutoff is None or os.path.getmtime(path) < cutoff:
                 os.remove(path)
                 removed += 1
     return removed
+
+
+if CACHE_DAYS > 0:
+    try:
+        clear_cache(older_than_days=CACHE_DAYS)
+    except OSError:
+        pass
 

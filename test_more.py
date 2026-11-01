@@ -321,6 +321,26 @@ if hasattr(td, "HDiv"):
         v.fields["R"] = td.Field(td.HCurl(v), ri)
         check("curl(R) of the HCurl rotation (-y, x, 0) vs (0, 0, 2)", fx.evaluate("curl(R)", v).values.numpy(),
               np.tile([0.0, 0.0, 2.0], (v.num_cells, 1)))
+    if hasattr(td, "hdiv_div"):
+        @tack.func
+        def rt(x):
+            return tack.vec3(1.0 + 2.0 * x[0], 3.0 + 2.0 * x[1], 0.5 + 2.0 * x[2])
+
+        @tack.kernel
+        def rt_fluxes(faces, centers, normals, areas, out):
+            for f in faces:
+                e = faces.entity_id(f)
+                out[e] = rt(centers[e]).dot(normals[e]) * areas[e]
+
+        gt = td.face_geometry(tets)
+        tf_ = tack.empty((td.HDiv(tets).size,), tets.dtype)
+        td.for_each(rt_fluxes, tets, "faces", td.face_centers(tets).values, gt.normal.values, gt.area.values, tf_)
+        tets.fields["F"] = td.Field(td.HDiv(tets), tf_)
+        xt = fx.evaluate("coords", tets).values.numpy()
+        check("F (HDiv) on tetrahedra vs the field it holds", fx.evaluate("F", tets).values.numpy(),
+              np.stack([1 + 2 * xt[:, 0], 3 + 2 * xt[:, 1], 0.5 + 2 * xt[:, 2]], axis=1))
+        check("div(F) on tetrahedra vs exact 6", fx.evaluate("div(F)", tets).values.numpy(),
+              np.full(tets.num_cells, 6.0))
     try:
         fx.compile_expression("F", v, at="points")
         print("  FAIL  F at points was accepted")
