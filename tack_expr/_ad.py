@@ -51,3 +51,28 @@ def unit_jac(v, J):
     n = v / m
     return (tack.identity(3) - n.outer_product(n)) @ J / m
 
+
+try:
+    from tack.dataset import world_gradient as _wg
+except ImportError:                               # a Tack without the public name
+    from tack.dataset.algorithms.gradients import _world_gradient as _wg
+
+
+@tack.func
+def world_hessian(cells, u, c, pc):
+    """u's Hessian in the world: the world gradient differentiated along each parametric
+    axis by a fourth-order central difference, then mapped by the inverse Jacobian. Exact
+    for fields up to order 4 on cells with an affine map, fourth-order accurate on others."""
+    h = 0.25
+    D = 0.0 * tack.identity(3)
+    for k in range(3):
+        e = tack.vec3(1.0 if k == 0 else 0.0, 1.0 if k == 1 else 0.0, 1.0 if k == 2 else 0.0)
+        dk = tack.vec3(0.0, 0.0, 0.0)
+        for s in range(4):
+            offset = -2.0 if s == 0 else (-1.0 if s == 1 else (1.0 if s == 2 else 2.0))
+            weight = 1.0 if s == 0 else (-8.0 if s == 1 else (8.0 if s == 2 else -1.0))
+            dk += weight * _wg(cells, u, c, pc + (offset * h) * e)
+        D += (dk / (12.0 * h)).outer_product(e)
+    H = D @ cells.geometry_jacobian(c, pc).inverse()
+    return 0.5 * (H + H.transpose())
+

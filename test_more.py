@@ -147,6 +147,20 @@ fx.for_each(above, pdata, q, mask, 0.6)
 ref = fx.evaluate("mag(V) * T + cells(P)", pdata).values.numpy()
 check("threshold kernel calling the expression vs evaluate", mask.numpy(), (ref > 0.6).astype(float))
 
+qf = fx.function("neighbor(T) - owner(T) * 2", cdata, at="faces")
+
+
+@tack.kernel
+def face_values(faces, q, out):
+    for f in faces:
+        out[faces.entity_id(f)] = q.value(faces, f)
+
+
+face_out = tack.zeros((cdata.topology.faces().num_faces,))
+fx.for_each(face_values, cdata, qf, face_out)
+check("face kernel calling a face expression vs evaluate at faces", face_out.numpy(),
+      fx.evaluate("neighbor(T) - owner(T) * 2", cdata, at="faces").values.numpy())
+
 # 5. node outputs: simplices and H1 targets
 print("node outputs:")
 tf = vtkDataSetTriangleFilter()

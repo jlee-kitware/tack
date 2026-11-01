@@ -115,6 +115,11 @@ check("mixed mesh: points(C) vs vtkCellDataToPointData",
       fx.evaluate("points(C)", mixed2, at="points").values.numpy(),
       vtk_to_numpy(c2p.GetOutput().GetPointData().GetArray("C")))
 
+poly_vtk = vtkAppendFilter()
+poly_vtk.SetInputData(img)
+poly_vtk.Update()
+run("polyhedral cells", vtk_to_dataset(poly_vtk.GetOutput(), polyhedral=True))
+
 print("timing, points(C) * 2 on a 192 x 64 x 32 grid:")
 big = with_cell_data(td.uniform_grid((192, 64, 32)))
 fused_c = fx.compile_expression("points(C) * 2", big, at="points")

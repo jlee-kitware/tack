@@ -182,8 +182,10 @@ class Derivative:
 
     def call(self, fn, pos):
         p = self.p
-        if fn in ("grad", "div", "curl", "qcrit"):
-            self.error(f"{fn}() inside a derivative is a second derivative, which is not implemented", pos)
+        if fn in ("grad", "div", "curl"):
+            return self.second(fn, pos)
+        if fn in ("qcrit", "laplacian"):
+            self.error(f"{fn}() inside a derivative is a third derivative, which is not implemented", pos)
         if fn in ("cells", "fsum"):
             name, npos = self.field_arg(fn)
             code, t = p.cells_of(name, npos) if fn == "cells" else p.fsum(name, npos)
@@ -272,6 +274,40 @@ class Derivative:
             check(S)
             return self.emit(f"tack.select({c[0]} == 0.0, 1.0, 0.0)", S), S, None
         self.error(f"unknown function '{fn}'", pos)
+
+    def second(self, fn, pos):
+        """grad, div or curl of an expression inside a derivative: its value from the
+        expression's gradients, its derivative from their Hessians."""
+        from ._second import argument_tokens, hessian_of, vector_second
+        inner, self.k = argument_tokens(self.toks, self.k, self.error, pos, fn)
+        if fn == "grad":
+            _, g, H = hessian_of(self.p, inner, pos)
+            return (g or ZERO_V), V, H
+        comps = vector_second(self.p, inner, pos).comps
+        g = [c[1] for c in comps]
+        H = [c[2] for c in comps]
+
+        def row(k, i):
+            return f"ad.row({H[k]}, {i})" if H[k] else None
+
+        if fn == "div":
+            terms = [f"{g[i]}[{i}]" for i in range(3) if g[i]]
+            value = self.emit(" + ".join(terms), S) if terms else "0.0"
+            rows = [row(i, i) for i in range(3)]
+            return value, S, self.sum(rows, S)
+        # curl: component k is d/dx_(k+1) of V_(k+2) - d/dx_(k+2) of V_(k+1).
+        parts, rows = [], []
+        for k in range(3):
+            a, b = (k + 2) % 3, (k + 1) % 3
+            terms = [f"{g[a]}[{b}]" if g[a] else None, f"-{g[b]}[{a}]" if g[b] else None]
+            terms = [t for t in terms if t]
+            parts.append(" + ".join(terms) if terms else "0.0")
+            r = [row(a, b), f"-({row(b, a)})" if row(b, a) else None]
+            rows.append(self.sum(r, S) or ZERO_V)
+        value = self.emit(f"tack.vec3({', '.join(parts)})", V)
+        if all(r == ZERO_V for r in rows):
+            return value, V, None
+        return value, V, self.d(f"tack.mat3({', '.join(rows)})")
 
     def power(self, a, da, b, db):
         v = self.emit(f"{a} ** {b}", S)

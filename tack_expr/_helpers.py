@@ -18,3 +18,17 @@ def entry_cells(cells, entries, out, n, start, end):
         if e >= start and e < end:
             out[i] = cells.entity_id((e - start) // cells.NUM_POINTS)
 
+
+@tack.kernel
+def position_cells(offsets, out, n):
+    """The cell of each position in a CSR of per-cell lists."""
+    for c in range(n):
+        for e in range(offsets[c], offsets[c + 1]):
+            out[e] = c
+
+
+@tack.kernel
+def gather(source, index, out, n):
+    for i in range(n):
+        out[i] = source[index[i]]
+

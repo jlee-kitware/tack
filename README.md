@@ -28,17 +28,25 @@ by entity. Data on other entities needs an explicit operator:
 
 | Operator | Meaning |
 | --- | --- |
-| `points(T)` | cell data averaged at each point, as `vtkCellDataToPointData`, inside the kernel on every mesh but polyhedra |
+| `points(T)` | cell data averaged at each point, as `vtkCellDataToPointData`, inside the kernel on every mesh |
 | `cells(T)` | point data averaged over each cell, as `vtkPointDataToCellData` |
 | `owner(T)`, `neighbor(T)` | in a face expression, the cell value on side 0 or 1 |
 | `fsum(F)` | in a cell expression, the outward sum of a face field over the cell's faces |
 | `grad(u)`, `div(V)`, `curl(V)`, `qcrit(V)` | derivatives through each cell's basis and geometry |
+| `laplacian(u)` | the trace of the Hessian; `div(grad(u))` is the same |
 
 `grad()` and the others also take an expression, such as `grad(T * P)` or `qcrit(U / (1 + u))`.
 The kernel carries each value's derivative alongside it (a gradient for a scalar, a Jacobian for a
 vector) and applies the chain rule, so the result is exact wherever the expression is
 differentiable, at any order. `test_derivatives.py` checks 16 such expressions against central
-differences of the exact fields. `HDiv` and `HCurl` fields, on a Tack with those spaces, are read
+differences of the exact fields.
+
+Second derivatives nest: `div(grad(u))`, `grad(grad(u)[0])`, `curl(curl(U))` and `laplacian(u * v)`
+carry each scalar's Hessian as well. A field's Hessian differentiates its world gradient along the
+parametric axes with a fourth-order stencil, exact for fields up to order 4 on cells that map
+affinely (uniform grids, tetrahedra) and fourth-order accurate on curved ones; in float32 the
+stencil leaves about 1e-4 of rounding. These kernels take seconds to compile the first time.
+`test_second.py` checks them, in float32 and float64. `HDiv` and `HCurl` fields, on a Tack with those spaces, are read
 through their Piola maps, and `div()` of an `HDiv` field is its outward flux over the cell's
 volume.
 
@@ -54,7 +62,8 @@ of a velocity field on a 192 x 64 x 32 grid take 0.20 ms this way, 0.62 ms as fo
 
 ## In other kernels
 
-`fx.function(expression, data)` returns a device class with `value(cells, c, pc)`, and
+`fx.function(expression, data)` returns a device class with `value(cells, c, pc)`, or with
+`at="faces"` one with `value(faces, f)`, and
 `fx.for_each(kernel, data, function, *args)` runs a kernel that calls it, so a threshold or a
 reduction can use an expression without storing it.
 

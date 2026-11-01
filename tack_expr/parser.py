@@ -31,7 +31,7 @@ import tack
 import tack.dataset as td
 from tack.arrays import materialize
 
-from ._helpers import component, entry_cells
+from ._helpers import component, entry_cells, gather, position_cells
 
 try:  # public in a Tack with the world_gradient export
     from tack.dataset import world_gradient as _world_gradient_fn  # noqa: F401
@@ -574,6 +574,13 @@ class _Compiler:
                          f" - ({J}[0, 1] * {J}[1, 0] + {J}[0, 2] * {J}[2, 0] + {J}[1, 2] * {J}[2, 1])", S)
 
     def call(self, fn, pos):
+        if fn == "laplacian":
+            from ._second import argument_tokens, hessian_of
+            inner, self.k = argument_tokens(self.toks, self.k, self.error, pos, fn)
+            if self.mode not in ("cells", "nodes"):
+                self.error("laplacian() is for cell and node expressions", pos)
+            _, _, H = hessian_of(self, inner, pos)
+            return self.emit(f"{H}[0, 0] + {H}[1, 1] + {H}[2, 2]", S) if H else ("0.0", S)
         if fn in _FIELD_FUNCTIONS:
             simple = (len(self.toks) > self.k + 2 and self.toks[self.k][1] == "("
                       and self.toks[self.k + 1][0] in ("name", "str")
@@ -721,6 +728,8 @@ def _point_links(data):
     or several, else None (polyhedra)."""
     from tack.dataset.topology import UnstructuredTopology, corner_layout
     topology = data.topology
+    if isinstance(topology, td.PolyhedralTopology):
+        return _polyhedral_links(topology)
     if not isinstance(topology, UnstructuredTopology) or not getattr(topology, "reference_cells", True):
         return None
     key = ("links", id(topology))
@@ -734,6 +743,22 @@ def _point_links(data):
                 start = start_of[group]
                 view = group.view()
                 entry_cells(view, entries, cells, n, start, start + group.count * group.shape.NUM_POINTS)
+        _links_cache[key] = (topology, (offsets, cells))
+    return _links_cache[key][1]
+
+
+def _polyhedral_links(topology):
+    """(offsets, cell of each link) for polyhedra or polygons: point_links() indexes each
+    cell's point list in cell_points(), so each list position is mapped to its cell."""
+    key = ("links", id(topology))
+    if key not in _links_cache:
+        offsets, entries = topology.point_links()
+        point_offsets, point_ids = topology.cell_points()
+        cell_of_position = tack.empty((point_ids.shape[0],), tack.i32)
+        position_cells(point_offsets, cell_of_position, topology.num_cells)
+        cells = tack.empty((entries.shape[0],), tack.i32)
+        if entries.shape[0]:
+            gather(cell_of_position, entries, cells, entries.shape[0])
         _links_cache[key] = (topology, (offsets, cells))
     return _links_cache[key][1]
 
@@ -988,14 +1013,15 @@ def evaluate(text, data, at="cells", replace_invalid=None, name=None):
 # --- expressions inside other kernels -------------------------------------
 
 class Function:
-    """An expression as a device class with value(dom, c, pc), for use in a kernel.
+    """An expression as a device class for use in a kernel: value(dom, c, pc) for one read
+    at cells, value(dom, f) for one read at faces.
 
     Run kernels with tack_expr.for_each, which builds the object for each launch
-    group: kernel(cells_view, expression_object, *args)."""
+    group: kernel(domain_view, expression_object, *args)."""
 
-    def __init__(self, text, cls, args, consts, rtype, source):
+    def __init__(self, text, cls, args, consts, rtype, source, domain="cells"):
         self.text, self.cls, self.args = text, cls, args
-        self.consts, self.type, self.source = consts, rtype, source
+        self.consts, self.type, self.source, self.domain = consts, rtype, source, domain
 
     def resolve(self, data):
         memo = {}
@@ -1003,32 +1029,42 @@ class Function:
 
     def bind(self, data, group, payloads):
         views = [p.view(group) if kind == "field" else p for (kind, _), p in zip(self.args, payloads)]
-        return self.cls(*views, *[_scalar(data, v) for v in self.consts])
+        # A device class takes Python numbers as instance scalars, not NumPy ones.
+        return self.cls(*views, *[float(_scalar(data, v)) for v in self.consts])
 
 
-def function(text, data):
-    """Compile text, read at cells, as a Function for use inside other kernels."""
-    c = _Compiler(text, data, "cells")
+def function(text, data, at="cells"):
+    """Compile text, read at cells or at faces, as a Function for use inside other kernels."""
+    if at not in ("cells", "faces"):
+        raise ValueError("a function is read at 'cells' or 'faces'")
+    c = _Compiler(text, data, at)
     result, rtype = c.parse()
     names = [f"A{k}" for k in range(len(c.args))] + [f"c{k}" for k in range(len(c.consts))]
     swap = re.compile(r"\b([Ac]\d+)\b")
     body = [swap.sub(r"self.\1", line) for line in c.lines] + [f"return {swap.sub(r'self.' + chr(92) + '1', result)}"]
+    if at == "faces":
+        signature = "value(self, dom, f)"
+        body = ["e = dom.entity_id(f)", "s0 = dom.side_cell(f, 0)", "s1 = dom.side_cell(f, 1)",
+                "s1 = s1 if s1 >= 0 else s0"] + body
+    else:
+        signature = "value(self, dom, c, pc)"
     source = (_imports(c) + "\n\n@tack.device_class\nclass Fx:\n"
               "    def __init__(self" + "".join(f", {n}" for n in names) + "):\n"
               + "".join(f"        self.{n} = {n}\n" for n in names) + ("        pass\n" if not names else "")
-              + "\n    @tack.func\n    def value(self, dom, c, pc):\n"
+              + f"\n    @tack.func\n    def {signature}:\n"
               + "".join(f"        {line}\n" for line in body))
-    return Function(text, _load(source, "Fx"), list(c.args), list(c.consts), rtype, source)
+    return Function(text, _load(source, "Fx"), list(c.args), list(c.consts), rtype, source, at)
 
 
 def for_each(kernel, data, fn, *args):
-    """Run kernel(cells_view, fn bound to the group, *args) once per cell group."""
+    """Run kernel(domain_view, fn bound to the group, *args) once per group of the domain
+    fn is read on: cells, or faces."""
     payloads = fn.resolve(data)
     fields = [p for (kind, _), p in zip(fn.args, payloads) if kind == "field"]
     fields += [a for a in args if isinstance(a, td.Field)]
-    for group in data.launch_groups("cells", fields):
+    for group in data.launch_groups(fn.domain, fields):
         if group.count:
-            kernel(data.domain_view("cells", group), fn.bind(data, group, payloads),
+            kernel(data.domain_view(fn.domain, group), fn.bind(data, group, payloads),
                    *[a.view(group) if isinstance(a, td.Field) else a for a in args])
 
 
