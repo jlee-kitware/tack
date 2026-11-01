@@ -1,8 +1,9 @@
 """Second derivatives against float64 central differences of the exact fields.
 
-The Hessian differentiates the world gradient along parametric axes with a stencil that is
-exact for these fields, so float32 results differ only by rounding, amplified by the stencil
-to about 1e-4 of the largest value; in float64 they agree to 1e-7.
+A field's Hessian comes from its basis' second derivatives on a Tack with ``world_hessian``,
+and otherwise from a stencil on the world gradient that is exact for these fields. Either way
+float32 results differ only by rounding, which second derivatives amplify to about 1e-4 of the
+largest value; in float64 they agree to 1e-7.
 
 u = x^3 + x y z + z^2 (order 3) and U = (x y, y^2 + z, x - 2 y z) (order 2) are held exactly
 by their H1 fields on a uniform grid, whose cells map affinely.
@@ -114,3 +115,10 @@ def test_float64(f64_backend):
 def test_third_derivatives_and_vector_laplacians_are_refused(data, expr):
     with pytest.raises(fx.ExprError):
         fx.compile_expression(expr, data)
+
+
+def test_surfaces_are_refused(backend):
+    data = td.uniform_grid((5, 4))
+    data.fields["u"] = td.interpolate(data, f_u, td.H1(data, order=2))
+    with pytest.raises(fx.ExprError, match="solid"):
+        fx.compile_expression("laplacian(u)", data)

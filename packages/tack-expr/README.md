@@ -192,6 +192,8 @@ Extensions beyond the VTK calculator:
   where the cell is on the face's side 0.
 - `laplacian(u)` and nested derivatives: `div(grad(u))`, `grad(grad(u)[0])`, `curl(curl(U))`, also
   of expressions such as `laplacian(u * v)`. Each scalar carries its Hessian; a field's comes from
+  its basis' second derivatives and the geometry's, through `tack.dataset.world_jet`, one pass
+  over the cell's values for the value, gradient and Hessian together. On a Tack without it, from
   its world gradient differentiated along the parametric axes with a fourth-order stencil, exact
   for fields up to order 4 on cells that map affinely.
 - `mag2(v)`: squared magnitude.
@@ -377,10 +379,11 @@ location into one kernel, so four derived fields of a velocity field on a 192 x 
   and voxels; tetrahedra have order 1, and wedges and pyramids neither. Derivatives of `HDiv` and
   `HCurl` fields inside a larger expression are refused.
 - **Third derivatives.** `grad(laplacian(u))` and `qcrit()` inside a derivative are refused.
-- **Second derivatives compile slowly and round.** A kernel with Hessians takes about 1 second to
-  compile at order 1 and 12 seconds at order 3, once; in float32 the stencil leaves about 1e-4 of
-  the largest value as rounding (1e-13 in float64). On curved cells it is fourth-order accurate,
-  not exact.
+- **Second derivatives round in float32.** About 1e-4 of the largest value: an order-3 basis'
+  second derivatives are sums of large terms that cancel, and the inverse Jacobian scales them by
+  the cell size squared (1e-13 in float64). With `world_jet` an expression with several Hessians
+  compiles in about 5 seconds, once; on a Tack without it, the stencil fallback takes up to a
+  minute and a half and is fourth-order accurate on curved cells, not exact.
 - **A subdivided contour of an expression refines every cell.** An expression has no Bernstein
   bound to skip cells by, as a stored field does.
 - **Ghost exchange across MPI ranks is untested here.** `update_ghosts=True` uses Tack's exchange,

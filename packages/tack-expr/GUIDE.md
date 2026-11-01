@@ -45,10 +45,15 @@ differentiable, at any order. `tests/test_expr_derivatives.py` checks 16 such ex
 differences of the exact fields.
 
 Second derivatives nest: `div(grad(u))`, `grad(grad(u)[0])`, `curl(curl(U))` and `laplacian(u * v)`
-carry each scalar's Hessian as well. A field's Hessian differentiates its world gradient along the
-parametric axes with a fourth-order stencil, exact for fields up to order 4 on cells that map
-affinely (uniform grids, tetrahedra) and fourth-order accurate on curved ones; in float32 the
-stencil leaves about 1e-4 of rounding. These kernels take seconds to compile the first time.
+carry each scalar's Hessian as well. On a Tack with `tack.dataset.world_jet`, a field's value,
+gradient and Hessian come from one pass over its cell's values, through its basis' second
+derivatives and the geometry's, so they are exact on curved cells too, and a kernel with several
+Hessians compiles in about 5 seconds the first time. On a Tack without it, a field's Hessian
+differentiates its world gradient along the parametric axes with a fourth-order stencil, exact for
+fields up to order 4 on cells that map affinely (uniform grids, tetrahedra) and fourth-order
+accurate on curved ones, and such kernels take up to a minute and a half to compile. In float32
+second derivatives round to about 1e-4 of the largest value either way. They are taken in solid
+cells; on surfaces they are refused.
 `tests/test_expr_second.py` checks them, in float32 and float64. `HDiv` and `HCurl` fields, on a Tack with those spaces, are read
 through their Piola maps, and `div()` of an `HDiv` field is its outward flux over the cell's
 volume.
