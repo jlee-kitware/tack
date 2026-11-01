@@ -55,6 +55,9 @@ class Derivative:
     def error(self, message, pos):
         self.p.error(message, pos)
 
+    def failure(self, message, pos):
+        return self.p.failure(message, pos)
+
     def need(self, got, want, pos):
         self.p.need(got, want, pos)
 
@@ -112,7 +115,7 @@ class Derivative:
                 return self.emit(f"-{a}", t), t, (self.d(f"-{da}") if da else None)
             self.need(t, S, pos)
             return self.emit(f"tack.select({a} == 0.0, 1.0, 0.0)", S), S, None
-        self.error("the expression ends too early" if kind == "end" else f"unexpected '{val}'", pos)
+        raise self.failure("the expression ends too early" if kind == "end" else f"unexpected '{val}'", pos)
 
     def name(self, val, pos):
         p = self.p
@@ -135,7 +138,7 @@ class Derivative:
             self.need(t, V, pos)
             k = "XYZ".index(comp)
             return self.emit(f"{a}[{k}]", S), S, (self.d(f"ad.row({J}, {k})") if J else None)
-        self.error(f"unknown name '{val}'", pos)
+        raise self.failure(f"unknown name '{val}'", pos)
 
     def field(self, name, pos):
         p = self.p
@@ -153,7 +156,8 @@ class Derivative:
         if t == S:
             u = p.arg("field", name, p.by_name(name))
             return value, S, p.load(f"grad:{name}", f"_world_gradient(dom, {u}, c, {pc})", V)[0]
-        parts = p.once(f"components:{name}", lambda d, m, g=p.by_name(name): P._components(g(d, m)))
+        whole = p.by_name(name)
+        parts = p.once(f"components:{name}", lambda d, m: P._components(whole(d, m)))
         rows = []
         for k in range(3):
             u = p.arg("field", f"{name}#{k}", lambda d, m, k=k: parts(d, m)[k])
@@ -275,7 +279,7 @@ class Derivative:
         if fn == "not":
             check(S)
             return self.emit(f"tack.select({c[0]} == 0.0, 1.0, 0.0)", S), S, None
-        self.error(f"unknown function '{fn}'", pos)
+        raise self.failure(f"unknown function '{fn}'", pos)
 
     def second(self, fn, pos):
         """grad, div or curl of an expression inside a derivative: its value from the
@@ -412,7 +416,7 @@ def compile_argument(parent, fn, pos):
         if depth == 0:
             break
         i += 1
-    inner = toks[open_index + 1:i] + [("end", "", toks[i][2])]
+    inner = [*toks[open_index + 1:i], ("end", "", toks[i][2])]
     parent.k = i + 1
     if parent.mode not in ("cells", "nodes"):
         parent.error(f"{fn}() is for cell and node expressions; a point gradient needs "

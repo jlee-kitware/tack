@@ -145,7 +145,7 @@ class Second:
                                  self.e(f"-{s[2]}") if s[2] else None)
                 return self.vec([neg(c) for c in a.comps]) if self.is_vec(a) else neg(a)
             return self.const(self.e(f"tack.select({self.scalar(a, pos)[0]} == 0.0, 1.0, 0.0)"))
-        self.p.error("the expression ends too early" if kind == "end" else f"unexpected '{val}'", pos)
+        raise self.p.failure("the expression ends too early" if kind == "end" else f"unexpected '{val}'", pos)
 
     def name(self, val, pos):
         p = self.p
@@ -164,7 +164,7 @@ class Second:
         base, _, comp = val.rpartition("_")
         if comp in ("X", "Y", "Z") and base in p.data.fields:
             return self.vector(self.field(base, pos), pos).comps["XYZ".index(comp)]
-        p.error(f"unknown name '{val}'", pos)
+        raise p.failure(f"unknown name '{val}'", pos)
 
     def leaf(self, name, field, getter, pos):
         """A scalar field with a basis: value, world gradient, world Hessian."""
@@ -191,7 +191,8 @@ class Second:
             return self.vec([self.const(self.e(f"{value}[{k}]")) for k in range(3)])
         if t == S:
             return self.leaf(name, field, p.by_name(name), pos)
-        parts = p.once(f"components:{name}", lambda d, m, g=p.by_name(name): P._components(g(d, m)))
+        whole = p.by_name(name)
+        parts = p.once(f"components:{name}", lambda d, m: P._components(whole(d, m)))
         comps = [self.leaf(f"{name}#{k}", None, lambda d, m, k=k: parts(d, m)[k], pos) for k in range(3)]
         return Vec(value, comps)
 
@@ -301,7 +302,7 @@ class Second:
         if fn == "not":
             want(1)
             return self.const(self.e(f"tack.select({self.scalar(a[0], pos)[0]} == 0.0, 1.0, 0.0)"))
-        p.error(f"unknown function '{fn}'", pos)
+        raise p.failure(f"unknown function '{fn}'", pos)
 
     def sum(self, terms):
         r = terms[0]
@@ -388,7 +389,7 @@ def argument_tokens(toks, open_index, error, pos, fn):
         if depth == 0:
             break
         i += 1
-    return toks[open_index + 1:i] + [("end", "", toks[i][2])], i + 1
+    return [*toks[open_index + 1:i], ("end", "", toks[i][2])], i + 1
 
 
 def hessian_of(parent, toks, pos):

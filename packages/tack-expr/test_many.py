@@ -4,9 +4,9 @@ import sys
 import time
 
 import numpy as np
+
 import tack
 import tack.dataset as td
-
 import tack_expr as fx
 
 device = sys.argv[1] if len(sys.argv) > 1 else "cuda"

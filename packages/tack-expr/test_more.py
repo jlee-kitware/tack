@@ -4,17 +4,21 @@ polyhedra, float64, invalid values, staged gradients, reuse after updates, the c
 import sys
 
 import numpy as np
-import tack
-import tack.dataset as td
-from tack.interop.vtk import vtk_to_dataset
+from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 from vtkmodules.vtkCommonCore import VTK_DOUBLE, vtkObject
 from vtkmodules.vtkCommonDataModel import vtkImageData
-from vtkmodules.vtkFiltersCore import (vtkAppendFilter, vtkArrayCalculator,
-                                       vtkCellDataToPointData, vtkPointDataToCellData)
+from vtkmodules.vtkFiltersCore import (
+    vtkAppendFilter,
+    vtkArrayCalculator,
+    vtkCellDataToPointData,
+    vtkPointDataToCellData,
+)
 from vtkmodules.vtkFiltersGeneral import vtkDataSetTriangleFilter
-from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 
+import tack
+import tack.dataset as td
 import tack_expr as fx
+from tack.interop.vtk import vtk_to_dataset
 
 device = sys.argv[1] if len(sys.argv) > 1 else "cuda"
 tack.set_default_device(device)
@@ -255,7 +259,7 @@ check(f"clear_cache removed {removed} modules; recompiled T + P", again, calc(pg
 print("partitioned data (4 pieces, one ghost layer):")
 whole = td.wavelet(10)
 pieces = td.split(whole, 4, ghost_layers=1)
-for data in [whole] + list(pieces):
+for data in [whole, *pieces]:
     g = td.face_geometry(data)
     ctr = td.face_centers(data).values.numpy()
     fl = (np.sum(ctr * g.normal.values.numpy(), axis=1) * g.area.values.numpy()).astype(np.float32)
