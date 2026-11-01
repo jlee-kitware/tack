@@ -6,6 +6,7 @@ is the Hessian's trace.
 A scalar is (value, gradient, hessian), with None for a zero gradient or Hessian.
 """
 
+from . import _ad as ad
 from . import parser as P
 
 S, V = P.S, P.V
@@ -170,8 +171,17 @@ class Second:
         """A scalar field with a basis: value, world gradient, world Hessian."""
         p = self.p
         pc = p.pc(pos)
+        if any(g.count and g.shape.DIMENSION != 3 for g in p.data.topology.groups()):
+            p.error("second derivatives are taken in solid cells; these are surfaces or lines", pos)
         p.uses_world_gradient = True
         u = p.arg("field", name, getter)
+        if not ad.STENCIL:
+            key = f"jet:{name}"
+            if key not in p.loaded:
+                k = len(p.loaded)
+                p.loaded[key] = (f"a{k}", f"g{k}", f"h{k}")
+                p.lines.append(f"a{k}, g{k}, h{k} = ad.world_jet(dom, {u}, c, {pc})")
+            return p.loaded[key]
         v = p.load(f"value:{name}", f"{u}.value(c, {pc})", S)[0]
         g = p.load(f"grad:{name}", f"_world_gradient(dom, {u}, c, {pc})", V)[0]
         H = p.load(f"hess:{name}", f"ad.world_hessian(dom, {u}, c, {pc})", V)[0]

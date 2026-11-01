@@ -58,8 +58,16 @@ except ImportError:                               # a Tack without the public na
     from tack.dataset.algorithms.gradients import _world_gradient as _wg
 
 
+try:
+    from tack.dataset import world_hessian, world_jet
+except ImportError:
+    world_hessian = world_jet = None
+
+STENCIL = world_hessian is None
+
+
 @tack.func
-def world_hessian(cells, u, c, pc):
+def stencil_hessian(cells, u, c, pc):
     """u's Hessian in the world: the world gradient differentiated along each parametric
     axis by a fourth-order central difference, then mapped by the inverse Jacobian. Exact
     for fields up to order 4 on cells with an affine map, fourth-order accurate on others."""
@@ -76,3 +84,7 @@ def world_hessian(cells, u, c, pc):
     H = D @ cells.geometry_jacobian(c, pc).inverse()
     return 0.5 * (H + H.transpose())
 
+
+
+if STENCIL:
+    world_hessian = stencil_hessian
