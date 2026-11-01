@@ -1,13 +1,17 @@
 ### Added
 
-- `HDiv` and `HCurl`, spaces of the lowest order on hexahedra and voxels.
+- `HDiv` (Raviart-Thomas) and `HCurl` (Nedelec, first kind): at order 1 on
+  hexahedra, voxels and tetrahedra, and of any order on hexahedra and voxels,
+  where the values on shared faces and edges are kept in the face's or edge's
+  own frame, so cells that number their corners differently agree.
   `HDiv` holds one value per face, its integrated flux along the face's
   stored normal (the convention of oriented face values, `upwind_flux` and
   `net_flux`); `HCurl` one value per edge, its tangential integral from the
   low point id to the high one. A field view's `parametric_value(c, pc)` is
   the field in the reference cell, and `hdiv_value` and `hcurl_value` map it
   into the world through the contravariant and covariant Piola maps;
-  `hcurl_curl` gives an `HCurl` field's curl.
+  `hcurl_curl` gives an `HCurl` field's curl and `hdiv_div` an `HDiv` field's
+  divergence.
 - `world_gradient(cells, u, c, pc)`, the device function `gradients` uses:
   a field's gradient in the world at a parametric point, for kernels that
   need it where `gradients` does not put it.

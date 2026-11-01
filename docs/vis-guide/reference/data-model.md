@@ -164,6 +164,8 @@ algorithms that work on them are in [Algorithms](algorithms.md).
 
 ::: tack.dataset.hdiv_value
 
+::: tack.dataset.hdiv_div
+
 ::: tack.dataset.hcurl_value
 
 ::: tack.dataset.hcurl_curl

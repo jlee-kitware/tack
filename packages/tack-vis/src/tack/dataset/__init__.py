@@ -153,7 +153,7 @@ from tack.dataset.temporal import (
     extend_paths,
 )
 from tack.dataset.topology import StructuredTopology, UnstructuredTopology
-from tack.dataset.vector_spaces import HCurl, HDiv, hcurl_curl, hcurl_value, hdiv_value
+from tack.dataset.vector_spaces import HCurl, HDiv, hcurl_curl, hcurl_value, hdiv_div, hdiv_value
 
 __all__ = [
     "H1",
@@ -250,6 +250,7 @@ __all__ = [
     "halo_catalog",
     "hcurl_curl",
     "hcurl_value",
+    "hdiv_div",
     "hdiv_value",
     "implicit",
     "implicit_values",
