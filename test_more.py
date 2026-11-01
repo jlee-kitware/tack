@@ -110,9 +110,7 @@ gu = td.gradients(h, "u", at="cells").values.numpy()
 check("grad(2 * u + 1) vs 2 * td.gradients(u)", fx.evaluate("grad(2 * u + 1)", h).values.numpy(), 2 * gu)
 uu = xc[:, 0] ** 2 + xc[:, 1] * xc[:, 2]
 exact = 2 * uu[:, None] * np.stack([2 * xc[:, 0], xc[:, 2], xc[:, 1]], axis=1)
-got = fx.evaluate("grad(u * u)", h).values.numpy()
-err = float(np.max(np.abs(got - exact)) / np.max(np.abs(exact)))
-print(f"  INFO  grad(u * u) through an order-2 interpolant vs exact: max error {err:.1e} of the largest value")
+check("grad(u * u) by the chain rule vs exact 2 u grad(u)", fx.evaluate("grad(u * u)", h).values.numpy(), exact)
 
 # 3. fused conversions
 print("conversions inside the kernel:")

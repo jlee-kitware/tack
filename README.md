@@ -34,8 +34,11 @@ by entity. Data on other entities needs an explicit operator:
 | `fsum(F)` | in a cell expression, the outward sum of a face field over the cell's faces |
 | `grad(u)`, `div(V)`, `curl(V)`, `qcrit(V)` | derivatives through each cell's basis and geometry |
 
-`grad()` and the others also take an expression, which is evaluated into an `L2` field of its
-fields' highest order first. `HDiv` and `HCurl` fields, on a Tack with those spaces, are read
+`grad()` and the others also take an expression, such as `grad(T * P)` or `qcrit(U / (1 + u))`.
+The kernel carries each value's derivative alongside it (a gradient for a scalar, a Jacobian for a
+vector) and applies the chain rule, so the result is exact wherever the expression is
+differentiable, at any order. `test_derivatives.py` checks 16 such expressions against central
+differences of the exact fields. `HDiv` and `HCurl` fields, on a Tack with those spaces, are read
 through their Piola maps, and `div()` of an `HDiv` field is its outward flux over the cell's
 volume.
 

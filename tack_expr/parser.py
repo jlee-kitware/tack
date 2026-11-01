@@ -126,6 +126,7 @@ class _Compiler:
         self.consts = []
         self.uses_world_gradient = False
         self.uses_vector_spaces = False
+        self.uses_derivatives = False
         self.uses_pc = False
 
     # --- emission -------------------------------------------------------
@@ -511,35 +512,22 @@ class _Compiler:
         self.expect(")")
         return name, npos
 
-    def staged_argument(self, fn, pos):
-        """grad(expression) and the like: the expression evaluated into an L2 field first.
-
-        The L2 order is the highest order among the expression's fields (at least 1),
-        so a gradient of a product of order-p fields is the gradient of its order-p
-        interpolant, not exact."""
-        open_tok = self.take()  # "("
-        depth, start = 1, open_tok[2] + 1
-        while depth:
-            kind, val, vpos = self.take()
-            if kind == "end":
-                self.error("missing ')'", vpos)
-            depth += {"(": 1, ")": -1}.get(val, 0)
-        inner = self.text[start:vpos]
-        probe = _Compiler(inner, self.data, "cells")
-        probe.parse()
-        memo = {}
-        orders = [getattr(get(self.data, memo).space, "order", 1)
-                  for kind, get in probe.args if kind == "field"]
-        order = max([1] + [o for o in orders if isinstance(o, int)])
-        try:
-            space = td.L2(self.data, order=order)
-            staged = evaluate(inner, self.data, at=space)
-        except (TypeError, ValueError, NotImplementedError):
-            space = td.L2(self.data, order=order, basis="equispaced")
-            staged = evaluate(inner, self.data, at=space)
-        compiled = compile_expression(inner, self.data, at=space)
-        getter = self.once(f"staged:{inner}", lambda d, m: compiled(d))
-        return f"staged:{inner}", staged, getter, pos
+    def derived(self, fn, t, d, pos):
+        """grad, div, curl or qcrit from an expression's derivative (None: zero)."""
+        from ._derivative import ZERO_M, ZERO_V
+        if fn == "grad":
+            if t != S:
+                self.error("grad() takes a scalar expression; use div(), curl() or qcrit() for a vector", pos)
+            return (d or ZERO_V), V
+        if t != V:
+            self.error(f"{fn}() takes a vector expression", pos)
+        J = d or ZERO_M
+        if fn == "div":
+            return self.emit(f"{J}[0, 0] + {J}[1, 1] + {J}[2, 2]", S)
+        if fn == "curl":
+            return self.emit(f"tack.vec3({J}[2, 1] - {J}[1, 2], {J}[0, 2] - {J}[2, 0], {J}[1, 0] - {J}[0, 1])", V)
+        return self.emit(f"-0.5 * ({J}[0, 0] * {J}[0, 0] + {J}[1, 1] * {J}[1, 1] + {J}[2, 2] * {J}[2, 2])"
+                         f" - ({J}[0, 1] * {J}[1, 0] + {J}[0, 2] * {J}[2, 0] + {J}[1, 2] * {J}[2, 1])", S)
 
     def call(self, fn, pos):
         if fn in _FIELD_FUNCTIONS:
@@ -547,8 +535,9 @@ class _Compiler:
                       and self.toks[self.k + 1][0] in ("name", "str")
                       and self.toks[self.k + 2][1] == ")")
             if not simple and fn in ("grad", "div", "curl", "qcrit"):
-                name, staged, getter, npos = self.staged_argument(fn, pos)
-                return self.gradient(fn, name, npos, staged, getter)
+                from ._derivative import compile_argument
+                _, t, d = compile_argument(self, fn, pos)
+                return self.derived(fn, t, d, pos)
             name, npos = self.field_arg(fn)
             if fn in ("grad", "div", "curl", "qcrit"):
                 return self.gradient(fn, name, npos)
@@ -749,6 +738,8 @@ def _imports(c):
     imports = "import tack\nfrom tack import math as tm\n"
     if c.uses_vector_spaces:
         imports += "from tack.dataset import hcurl_value, hdiv_value\n"
+    if c.uses_derivatives:
+        imports += "from tack_expr import _ad as ad\n"
     return imports + (_GRADIENT_IMPORT if c.uses_world_gradient else "")
 
 
