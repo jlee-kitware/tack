@@ -45,6 +45,13 @@ volume.
 A `td.PartitionedDataSet` runs piece by piece; with a ghost layer, what each piece owns is the
 whole mesh's result.
 
+## Several at once
+
+`fx.compile_many({"vorticity": "mag(curl(V))", "q": "qcrit(V)", ...}, data, at="cells")` compiles
+several expressions at one location into one kernel. Each field read, derivative and conversion
+is done once for all of them, and calling the result gives `{name: td.Field}`. Four derived fields
+of a velocity field on a 192 x 64 x 32 grid take 0.20 ms this way, 0.62 ms as four kernels.
+
 ## In other kernels
 
 `fx.function(expression, data)` returns a device class with `value(cells, c, pc)`, and

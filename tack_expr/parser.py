@@ -412,6 +412,13 @@ class _Compiler:
 
     # --- grammar --------------------------------------------------------
 
+    def restart(self, text):
+        """Parse another expression into the same kernel: its field reads, derivatives and
+        constants are shared with the ones before it."""
+        self.text = text
+        self.toks = self._tokenize(text)
+        self.k = 0
+
     def parse(self):
         result = self.expr(0)
         kind, val, pos = self.peek()
@@ -673,23 +680,29 @@ def _single_shape_links(data):
 
 # --- kernel assembly ------------------------------------------------------
 
-def _loop(mode, body, result, uses_pc, count="(target.ORDER + 1) ** dom.DIMENSION"):
+def _loop(mode, body, results, uses_pc, count="(target.ORDER + 1) ** dom.DIMENSION"):
+    """The kernel's loop: body, then each result stored in its output (out, or out0, out1...)."""
+    outs = ["out"] if len(results) == 1 else [f"out{k}" for k in range(len(results))]
+
+    def store(indent, index):
+        return [f"{indent}{o}[{index}] = {r}" for o, r in zip(outs, results)]
+
     if mode == "cells":
         head = ["for c in dom:"] + (["    pc = dom.parametric_center()"] if uses_pc else [])
-        return head + ["    " + b for b in body] + ["    out[dom.entity_id(c)] = " + result]
+        return head + ["    " + b for b in body] + store("    ", "dom.entity_id(c)")
     if mode == "corners":
         head = ["for c in dom:", "    for j in range(" + ("dom.NUM_POINTS" if count else "dom.num_points(c)") + "):"]
         head += ["        pc = dom.parametric_point(j)"] if uses_pc else []
-        return head + ["        " + b for b in body] + ["        out[dom.point_id(c, j)] = " + result]
+        return head + ["        " + b for b in body] + store("        ", "dom.point_id(c, j)")
     if mode == "nodes":
         count, pc, index = _NODE_LOOPS[count]
         head = ["for c in dom:", f"    for n in range({count}):", f"        pc = {pc}"]
-        return head + ["        " + b for b in body] + [f"        out[{index}] = " + result]
+        return head + ["        " + b for b in body] + store("        ", index)
     if mode == "pointloop":
-        return ["for p in range(n):"] + ["    " + b for b in body] + ["    out[p] = " + result]
+        return ["for p in range(n):"] + ["    " + b for b in body] + store("    ", "p")
     head = ["for f in dom:", "    e = dom.entity_id(f)", "    s0 = dom.side_cell(f, 0)",
             "    s1 = dom.side_cell(f, 1)", "    s1 = s1 if s1 >= 0 else s0"]
-    return head + ["    " + b for b in body] + ["    out[e] = " + result]
+    return head + ["    " + b for b in body] + store("    ", "e")
 
 
 # Node loops by the target space and cell shape: (count, parametric point, value index).
@@ -748,17 +761,22 @@ def _scalar(data, value):
 
 
 class Compiled:
-    """A compiled expression: its kernels, output location and arguments.
+    """Compiled expressions: their kernels, output location and arguments.
 
-    Kernel sources depend only on the expression's structure, the output and how
+    Kernel sources depend only on the expressions' structure, the output and how
     each field is read. Constants are scalar arguments, so expressions that differ
-    only in their numbers share compiled kernels.
+    only in their numbers share compiled kernels. compile_expression makes one with a
+    single output; compile_many one with several, computed in the same loop.
     """
 
-    def __init__(self, text, make, mode, space, args, consts, rtype):
+    def __init__(self, text, make, mode, space, args, consts, types, names=None):
         self.text, self.make, self.mode, self.space = text, make, mode, space
-        self.args, self.consts, self.type = args, consts, rtype
+        self.args, self.consts, self.types, self.names = args, consts, types, names
         self.sources, self.kernels = {}, {}
+
+    @property
+    def type(self):
+        return self.types[0]
 
     def kernel(self, variant):
         if variant not in self.kernels:
@@ -771,37 +789,44 @@ class Compiled:
             self.kernel("main" if self.mode != "nodes" else "tensor")
         return next(iter(self.sources.values()))
 
+    def _allocate(self, data, t):
+        dtype = tack.vec3(data.dtype) if t == V else data.dtype
+        # A point no cell uses is not written in the corner loop.
+        alloc = tack.zeros if self.mode == "corners" else tack.empty
+        return alloc((self.space.size,), dtype)
+
     def __call__(self, data, out=None):
-        """Run over data; out, when given, is the output array to fill."""
-        if out is None:
-            dtype = tack.vec3(data.dtype) if self.type == V else data.dtype
-            # A point no cell uses is not written in the corner loop.
-            alloc = tack.zeros if self.mode == "corners" else tack.empty
-            out = alloc((self.space.size,), dtype)
-        result = td.Field(self.space, out)
+        """Run over data. With one expression: a td.Field, out its array if given. With
+        several: {name: td.Field}, out a {name: array} for any of them to fill."""
+        if self.names is None:
+            outs = [out if out is not None else self._allocate(data, self.types[0])]
+        else:
+            given = out or {}
+            outs = [given.get(n) if given.get(n) is not None else self._allocate(data, t)
+                    for n, t in zip(self.names, self.types)]
+        results = [td.Field(self.space, o) for o in outs]
         memo = {}
         payloads = [get(data, memo) for _, get in self.args]
         consts = [_scalar(data, v) for v in self.consts]
         if self.mode == "pointloop":
-            self.kernel("main")(data.num_points, *payloads, out, *consts)
+            self.kernel("main")(data.num_points, *payloads, *outs, *consts)
         elif self.mode == "nodes":
             kinds = [kind for kind, _ in self.args]
             fields = [p for kind, p in zip(kinds, payloads) if kind == "field"]
-            for group in data.launch_groups("cells", fields + [result]):
+            for group in data.launch_groups("cells", fields + [results[0]]):
                 if not group.count:
                     continue
                 variant, nodes = _node_variant(self.space, group.shape)
-                node_list = tack.array(np.asarray(nodes if isinstance(nodes, (list, tuple)) or
-                                                  hasattr(nodes, "__len__") else [0], dtype=np.int32))
+                node_list = tack.array(np.asarray(nodes if hasattr(nodes, "__len__") else [0], dtype=np.int32))
                 node_count = len(nodes) if hasattr(nodes, "__len__") else int(nodes or 0)
                 self.kernel(variant)(data.domain_view("cells", group),
                                      *[p.view(group) if kind == "field" else p
                                        for kind, p in zip(kinds, payloads)],
-                                     result.view(group), node_list, node_count, out, *consts)
+                                     results[0].view(group), node_list, node_count, *outs, *consts)
         else:
             domain = "faces" if self.mode == "faces" else "cells"
-            td.for_each(self.kernel("main"), data, domain, *payloads, out, *consts)
-        return result
+            td.for_each(self.kernel("main"), data, domain, *payloads, *outs, *consts)
+        return results[0] if self.names is None else dict(zip(self.names, results))
 
 
 def _output(data, at):
@@ -820,34 +845,61 @@ def _output(data, at):
     raise ValueError("node output takes an L2 or H1 space of the dataset's topology")
 
 
+def _compile(texts, data, at, replace_invalid, names):
+    mode, space = _output(data, at)
+    continuous = isinstance(space, td.H1) and mode == "nodes"
+
+    def parse_all(mode, continuous):
+        c = _Compiler(texts[0], data, mode, continuous)
+        parsed = [c.parse()]
+        for text in texts[1:]:
+            c.restart(text)
+            parsed.append(c.parse())
+        return c, parsed
+
+    try:
+        c, parsed = parse_all(mode, continuous)
+    except _NeedCorners:
+        mode = "corners"
+        c, parsed = parse_all(mode, False)
+    results, types = [], []
+    for result, rtype in parsed:
+        if replace_invalid is not None:
+            rep, _ = c.const(replace_invalid)
+            result, _ = c.emit(f"tack.select({result} - {result} == 0.0, {result}, {rep})", rtype)
+        results.append(result)
+        types.append(rtype)
+    outs = ["out"] if len(results) == 1 else [f"out{k}" for k in range(len(results))]
+    params = (["n"] if mode == "pointloop" else ["dom"]) + [f"A{k}" for k in range(len(c.args))]
+    params += (["target", "node_list", "node_count"] if mode == "nodes" else [])
+    params += outs + [f"c{k}" for k in range(len(c.consts))]
+    head = _imports(c) + "\n\n@tack.kernel\ndef fx(" + ", ".join(params) + "):\n"
+
+    def make(variant, lines=list(c.lines), results=results, uses_pc=c.uses_pc, reference=c.reference):
+        count = variant if mode == "nodes" else ("dom.NUM_POINTS" if reference else "")
+        source = head + "\n".join("    " + line for line in _loop(mode, lines, results, uses_pc, count)) + "\n"
+        return source, _load(source, "fx")
+
+    text = texts[0] if names is None else "; ".join(f"{n}={t}" for n, t in zip(names, texts))
+    return Compiled(text, make, mode, space, list(c.args), list(c.consts), types, names)
+
+
 def compile_expression(text, data, at="cells", replace_invalid=None):
     """Parse text over data's fields and return a Compiled expression for output at.
 
     replace_invalid: a number that replaces NaN and infinite results, as
     vtkArrayCalculator's ReplaceInvalidValues does."""
-    mode, space = _output(data, at)
-    continuous = isinstance(space, td.H1) and mode == "nodes"
-    try:
-        c = _Compiler(text, data, mode, continuous)
-        result, rtype = c.parse()
-    except _NeedCorners:
-        mode = "corners"
-        c = _Compiler(text, data, mode)
-        result, rtype = c.parse()
-    if replace_invalid is not None:
-        rep, _ = c.const(replace_invalid)
-        result, _ = c.emit(f"tack.select({result} - {result} == 0.0, {result}, {rep})", rtype)
-    params = (["n"] if mode == "pointloop" else ["dom"]) + [f"A{k}" for k in range(len(c.args))]
-    params += (["target", "node_list", "node_count"] if mode == "nodes" else [])
-    params += ["out"] + [f"c{k}" for k in range(len(c.consts))]
-    head = _imports(c) + "\n\n@tack.kernel\ndef fx(" + ", ".join(params) + "):\n"
+    return _compile([text], data, at, replace_invalid, None)
 
-    def make(variant, lines=list(c.lines), result=result, uses_pc=c.uses_pc, reference=c.reference):
-        count = variant if mode == "nodes" else ("dom.NUM_POINTS" if reference else "")
-        source = head + "\n".join("    " + line for line in _loop(mode, lines, result, uses_pc, count)) + "\n"
-        return source, _load(source, "fx")
 
-    return Compiled(text, make, mode, space, list(c.args), list(c.consts), rtype)
+def compile_many(expressions, data, at="cells", replace_invalid=None):
+    """Several expressions, {name: text}, compiled into one kernel for output at: one
+    launch, and each field read, derivative and conversion done once for all of them.
+    Calling the result gives {name: td.Field}."""
+    if not expressions:
+        raise ValueError("compile_many needs at least one expression")
+    names = list(expressions)
+    return _compile([expressions[n] for n in names], data, at, replace_invalid, names)
 
 
 def evaluate(text, data, at="cells", replace_invalid=None, name=None):
