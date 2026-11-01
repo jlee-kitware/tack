@@ -148,7 +148,7 @@ def test_vector_derivatives_match_td_flow_quantities(data):
     assert_close(values("div(U)", data), x[:, 1])
 
 
-@pytest.mark.parametrize("expr", ["grad(laplacian(u))", "grad(U * 2)", "div(u * v)"])
+@pytest.mark.parametrize("expr", ["grad(laplacian(u))", "div(u * v)"])
 def test_what_has_no_derivative_here_is_refused(data, expr):
     with pytest.raises(fx.ExprError):
         fx.compile_expression(expr, data, at="cells")

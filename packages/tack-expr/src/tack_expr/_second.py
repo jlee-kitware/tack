@@ -194,6 +194,8 @@ class Second:
         if kind in ("hdiv", "hcurl"):
             p.error(f"second derivatives of {type(field.space).__name__} fields are not implemented", pos)
         value, t = p.field(name, pos)
+        if t == P.M:
+            p.error("second derivatives of tensor fields are not implemented", pos)
         constant = kind == "values-cells" or isinstance(field.space, P.td.Constant)
         if kind != "basis" or constant:
             if t == S:

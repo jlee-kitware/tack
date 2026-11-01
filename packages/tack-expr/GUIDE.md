@@ -60,6 +60,91 @@ Python's own and are not expressions. NumPy's ufuncs (`np.sqrt`, `np.sin`, `np.a
 `fx.cells`, `fx.points`, `fx.owner`, `fx.neighbor` and `fx.fsum` of a field. `fx.compile_many`
 takes expressions and text alike. `tests/test_expr_operators.py` checks each against the text.
 
+## Tensors
+
+A field stored as `tack.mat3`, or as 9 components or 6 symmetric ones (VTK's order: XX YY ZZ XY
+YZ XZ), is a 3x3 tensor. `grad()` of a vector, a field or an expression, is its Jacobian, row
+`i` the gradient of component `i`. `{u, v, w}` of three vectors is the tensor with those rows,
+and `identity` is the unit tensor.
+
+```python
+fx.evaluate("vonmises(S)", data)                     # S stored as 6 components per cell
+fx.evaluate("eigvals(S)[0] - eigvals(S)[2]", data)   # principal stresses, largest first
+fx.evaluate("ddot(sym(grad(U)), sym(grad(U)))", data)
+fx.evaluate("dot(S, norm(coords))", data)            # traction on a sphere
+```
+
+`trace`, `det`, `transpose`, `inv`, `sym`, `skew`, `dev`, `ddot` (A:B), `outer` of two vectors,
+`vonmises`, `eigvals` (of the symmetric part) and `mag` (Frobenius) take tensors; `dot` is the
+matrix product of tensors and vectors in any order. `S[i]` is a row, `S[i][j]` and `S_XY`
+entries. `+` and `-` take two tensors, `*` and `/` a tensor and a scalar. Derivatives of tensor
+expressions, `div(S)` among them, are not implemented yet.
+
+## Complex values
+
+A field stored as two real fields, `u_real` and `u_imag` (or `_re`/`_im`, `Real`/`Imag`, `_r`/`_i`), is
+the complex field `u`, as a harmonic analysis writes its response; `2j`, `complex(a, b)` and a
+dictionary entry make others.
+
+```python
+fx.evaluate("abs(u)", data)                 # amplitude
+fx.evaluate("phase(u, pi / 4)", data)       # the response at 45 degrees: Re(u exp(i pi/4))
+fx.evaluate("vonmises(phase(S, pi / 2))", data)  # S a complex stress: the von Mises stress then
+```
+
+Arithmetic, `exp`, the derivatives and the linear and bilinear functions (`dot`, `cross`,
+`outer`, `ddot`, `trace`, ...) take complex values; `real`, `imag`, `abs`, `arg`, `conj`,
+`mag` and `phase` end in real ones. A comparison, or a function of real values only, refuses
+a complex argument, and an expression whose result is complex asks which real part to take.
+Complex values are split into their real and imaginary parts before code generation, so the
+kernel is of real fields.
+
+## Units
+
+Units are Tack's: a field's `unit` (`td.Field(space, values, unit)`), the dataset's (`DataSet.unit`,
+the geometry's), and `tack.dataset.units`. An expression of fields with units has one:
+
+```python
+p = fx.evaluate("p - 101.325[kPa]", data)            # p in Pa: p.unit == "Pa"
+fx.evaluate("grad(T)", data, units="K/mm")           # converted to the unit asked for
+fx.evaluate("rho * mag(U)", data, fields={"rho": "kg/m^3", "U": "m/s"})
+```
+
+Known units that differ are converted where they meet, in a sum, a comparison, `min`, `max` or
+a choice, and refused when their dimensions differ (`p + U`). `exp`, `log` and the trigonometric
+functions take pure numbers (an angle in any unit is converted to radians). A product's unit is
+the product of units; a derivative's divides by the geometry's; a derivative of a unit with an
+offset zero (degC) is in its difference unit (K). A unit unknown anywhere makes the result's
+unknown, as elsewhere in Tack: never guessed and never refused. A bare number in a sum or
+comparison is in the unit of what it meets, so `T > 300` compares kelvin with kelvin, and
+`101.325[kPa]` gives a number its own unit. Conversions are factors in the kernel where units
+meet; nothing is converted that need not be, so kPa plus kPa stays kPa.
+
+## Field dictionary
+
+A `fx.FieldDictionary` maps the names expressions use to what a dataset stores, and gives the
+units of fields stored without one:
+
+```python
+names = fx.cgns()                                     # CGNS SIDS names, in SI
+fx.evaluate("Pressure / (0.5 * Density * mag2(Velocity))", data, fields=names)
+names = names.with_units(Pressure="psi").with_sources(Density="rho_air")
+custom = fx.FieldDictionary(length="mm").define("u", "mm", aliases=("disp",), complex=("ur", "ui"))
+```
+
+An entry finds its storage by its name or an alias, exactly and then ignoring case for names
+longer than three letters; by a source, a field name or an expression; by three component
+fields as a vector (`VelocityX`, `VelocityY`, `VelocityZ`) or six as a symmetric tensor
+(`StressXX` ... `StressXZ`); or by a real and an imaginary part. A field's own unit wins over the
+entry's. `fields={"p": "kPa"}` is the short form, a dictionary of units for fields of those
+names. `cgns()` holds the flow quantities of the CGNS SIDS and structural and electromagnetic
+ones named in the same style, with aliases only where they rarely mean anything else (`p`, `T`,
+`rho`, `U`).
+
+All four are passes over the expression's tree before code generation (`_front.py`), shared by
+text and the Python operators; an expression that needs none of them compiles exactly as it
+did. `tests/test_expr_units.py` and `tests/test_expr_tensors.py` check them against NumPy.
+
 ## Locations
 
 `at` is `"cells"`, `"points"`, `"faces"`, or a space: `L2` of any order, or `H1` for an expression
@@ -146,12 +231,18 @@ uv run pytest packages/tack-expr/tests/test_expr_vtk.py    # the comparisons wit
 - `test_expr_pieces.py`: pieces with a ghost layer, and the ghost refresh.
 - `test_expr_contour.py`: contours of expressions.
 - `test_expr_kernels.py`: expressions in other kernels, reuse after updates, the module cache.
+- `test_expr_operators.py`: the Python operators against the calculator syntax.
+- `test_expr_units.py`: units, the field dictionary and complex values.
+- `test_expr_tensors.py`: tensor storage, the velocity gradient and the tensor functions.
 
 The examples run on a field whose answers are known, and check them:
 
 - `examples/50_field_expressions.py`: values, derivatives, and several expressions in one kernel.
 - `examples/51_expressions_unstored.py`: an expression in a kernel of your own, in a contour,
   and on pieces, and the time one kernel for four fields saves.
+- `examples/52_engineering_quantities.py`: a harmonic response stored in mm and MPa, named through
+  a field dictionary: complex displacement and stress, units, von Mises at a phase, principal
+  stresses.
 
 ```bash
 uv run python packages/tack-expr/examples/50_field_expressions.py --arch cuda

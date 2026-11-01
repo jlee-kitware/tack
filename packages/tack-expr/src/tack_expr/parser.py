@@ -43,7 +43,7 @@ try:  # public in a Tack with the world_gradient export
 except ImportError:
     _GRADIENT_IMPORT = "from tack.dataset.algorithms.gradients import _world_gradient\n"
 
-S, V = "scalar", "vector"
+S, V, M = "scalar", "vector", "tensor"
 
 CACHE_DIR = os.environ.get("TACK_EXPR_CACHE",
                            os.path.join(os.path.expanduser("~"), ".cache", "tack_expr"))
@@ -127,6 +127,28 @@ def _is_vector(field):
     return getattr(values, "scalar_size", 0) == 3 * getattr(values, "size", -1)
 
 
+def _type(field):
+    """S, V or M: M a 3x3 tensor, stored as mat3 or as 9 or 6 (symmetric: XX YY ZZ XY YZ XZ)
+    components."""
+    if _kind(field) in ("hdiv", "hcurl"):
+        return V
+    values = field.values
+    size = getattr(values, "size", 0) or 1
+    return {3: V, 6: M, 9: M}.get(getattr(values, "scalar_size", size) // size, S)
+
+
+def _as_matrix(field, code):
+    """A tensor field's value as a mat3, from the components it is stored as."""
+    if getattr(getattr(field.values, "dtype", None), "shape", None) == (3, 3):
+        return None
+    n = field.values.scalar_size // field.values.size
+    c = [f"{code}[{k}]" for k in range(n)]
+    if n == 9:
+        return f"tack.mat3({', '.join(c)})"
+    xx, yy, zz, xy, yz, xz = c
+    return f"tack.mat3({xx}, {xy}, {xz}, {xy}, {yy}, {yz}, {xz}, {yz}, {zz})"
+
+
 def _entity_numbered_h1(field):
     """An H1 field whose first num_points values are its point values."""
     return isinstance(field.space, td.H1) and getattr(field.space, "dofs", None) is None
@@ -152,6 +174,7 @@ class _Compiler:
         self.fields_read = set()
         self.uses_pc = False
         self.bindings = _BINDINGS.get() or {}
+        self.matrices = set()
 
     # --- emission -------------------------------------------------------
 
@@ -269,9 +292,24 @@ class _Compiler:
     def field(self, name, pos, field=None, key=None, getter=None):
         """A field read at the output location, or an error saying what to use."""
         field = field if field is not None else self.lookup(name, pos)
+        return self.matrix(field, self._read(name, pos, field, key, getter), key or name)
+
+    def matrix(self, field, read, key):
+        """read (code, type) of field, a tensor stored as components given as a mat3."""
+        code, t = read
+        if t != M or code in self.matrices:
+            return read
+        made = _as_matrix(field, code)
+        if made is None:
+            return read
+        code, _ = self.load(f"mat:{key}", made, M)
+        self.matrices.add(code)
+        return code, M
+
+    def _read(self, name, pos, field, key, getter):
         key = key or name
         getter = getter or self.by_name(name)
-        t = V if _is_vector(field) else S
+        t = _type(field)
         kind = _kind(field)
         mode = self.mode
         constant = kind == "values-cells" or isinstance(field.space, td.Constant)
@@ -324,7 +362,7 @@ class _Compiler:
             self.error("cells() is for cell and node expressions", pos)
         field = self.lookup(name, pos)
         kind = _kind(field)
-        t = V if _is_vector(field) else S
+        t = _type(field)
         if kind == "values-cells" or isinstance(field.space, td.Constant):
             return self.field(name, pos)
         if kind == "values-points" or _entity_numbered_h1(field):
@@ -346,7 +384,7 @@ class _Compiler:
             self.error("points() is for point expressions", pos)
         field = self.lookup(name, pos)
         kind = _kind(field)
-        t = V if _is_vector(field) else S
+        t = _type(field)
         if kind == "values-points" or isinstance(field.space, td.H1):
             return self.field(name, pos)
         if kind not in ("basis", "values-cells"):
@@ -413,7 +451,7 @@ class _Compiler:
         elif _kind(field) not in ("basis", "values-cells"):
             self.error(f"{fn}() takes cell data", pos)
         a = self.raw(f"{name}:cells", get)
-        t = V if _is_vector(field) else S
+        t = _type(field)
         return self.load(f"{fn}:{name}", f"{a}[{'s0' if fn == 'owner' else 's1'}]", t)
 
     def fsum(self, name, pos):
@@ -463,10 +501,9 @@ class _Compiler:
             self.error(f"{fn}() takes a field with a basis", pos)
         pc = self.pc(pos)
         self.uses_world_gradient = True
-        if fn == "grad":
-            if _is_vector(field):
-                self.error("grad() takes a scalar field; use div(), curl() or qcrit() for a "
-                           "vector, or grad() of each component field", pos)
+        if _type(field) == M:
+            self.error(f"{fn}() of a tensor field is not implemented; take it of each component", pos)
+        if fn == "grad" and not _is_vector(field):
             u = self.arg("field", name, getter)
             return self.load(f"grad:{name}", f"_world_gradient(dom, {u}, c, {pc})", V)
         if not _is_vector(field):
@@ -477,6 +514,8 @@ class _Compiler:
             u = self.arg("field", f"{name}#{k}", lambda d, m, k=k: parts(d, m)[k])
             rows.append(self.load(f"grad:{name}#{k}", f"_world_gradient(dom, {u}, c, {pc})", V)[0])
         gx, gy, gz = rows   # row i: the gradient of component i
+        if fn == "grad":
+            return self.load(f"jac:{name}", f"tack.mat3({gx}, {gy}, {gz})", M)
         if fn == "div":
             return self.emit(f"{gx}[0] + {gy}[1] + {gz}[2]", S)
         if fn == "curl":
@@ -525,8 +564,10 @@ class _Compiler:
             return result
         if val == "{":
             parts = self.args_list("}")
+            if len(parts) == 3 and all(t == V for _, t in parts):
+                return self.emit(f"tack.mat3({', '.join(c for c, _ in parts)})", M)
             if len(parts) != 3 or any(t != S for _, t in parts):
-                self.error("a vector needs three scalars", pos)
+                self.error("a vector needs three scalars, and a tensor three vectors (its rows)", pos)
             return self.emit(f"tack.vec3({', '.join(c for c, _ in parts)})", V)
         if val in ("-", "+", "!", "not"):
             a, t = self.expr(_PREFIX_BP)
@@ -553,11 +594,17 @@ class _Compiler:
             if val == "coords":
                 return x
             return self.emit(f"{x[0]}[{'XYZ'.index(val[-1])}]", S)
+        if val == "identity":
+            return "tack.identity(3)", M
         base, _, comp = val.rpartition("_")
         if comp in ("X", "Y", "Z") and self.has_field(base):
             a, t = self.field(base, pos)
             self.need(t, V, pos)
             return self.emit(f"{a}[{'XYZ'.index(comp)}]", S)
+        if len(comp) == 2 and set(comp) <= set("XYZ") and self.has_field(base):
+            a, t = self.field(base, pos)
+            self.need(t, M, pos)
+            return self.emit(f"{a}[{'XYZ'.index(comp[0])}, {'XYZ'.index(comp[1])}]", S)
         raise self.failure(f"unknown name '{val}'", pos)
 
     def coords(self, pos):
@@ -597,9 +644,9 @@ class _Compiler:
         """grad, div, curl or qcrit from an expression's derivative (None: zero)."""
         from ._derivative import ZERO_M, ZERO_V
         if fn == "grad":
-            if t != S:
-                self.error("grad() takes a scalar expression; use div(), curl() or qcrit() for a vector", pos)
-            return (d or ZERO_V), V
+            if t not in (S, V):
+                self.error("grad() takes a scalar or vector expression", pos)
+            return ((d or ZERO_V), V) if t == S else ((d or ZERO_M), M)
         if t != V:
             self.error(f"{fn}() takes a vector expression", pos)
         J = d or ZERO_M
@@ -629,17 +676,18 @@ class _Compiler:
             name, npos = self.field_arg(fn)
             if fn in ("grad", "div", "curl", "qcrit"):
                 return self.gradient(fn, name, npos)
-            if fn == "points":
-                return self.points_of(name, npos)
-            if fn == "cells":
-                return self.cells_of(name, npos)
             if fn == "fsum":
                 return self.fsum(name, npos)
-            return self.side(fn, name, npos)
+            read = {"points": self.points_of, "cells": self.cells_of}.get(fn)
+            got = read(name, npos) if read else self.side(fn, name, npos)
+            return self.matrix(self.lookup(name, npos), got, f"{fn}:{name}")
         self.expect("(")
         a = self.args_list(")")
         c = [code for code, _ in a]
         t = [typ for _, typ in a]
+        got = self.tensor_call(fn, c, t, pos)
+        if got is not None:
+            return got
 
         def check(*want):
             if len(a) != len(want):
@@ -683,6 +731,67 @@ class _Compiler:
             return self.emit(f"tack.select({c[0]} == 0.0, 1.0, 0.0)", S)
         raise self.failure(f"unknown function '{fn}'", pos)
 
+    def eigvals(self, a):
+        """The eigenvalues of a's symmetric part, largest first (Smith's closed form)."""
+        k = len(self.lines)
+        self.lines += [
+            f"es{k} = 0.5 * ({a} + {a}.transpose())",
+            f"eq{k} = es{k}.trace() / 3.0",
+            f"ep1{k} = es{k}[0, 1] * es{k}[0, 1] + es{k}[0, 2] * es{k}[0, 2] + es{k}[1, 2] * es{k}[1, 2]",
+            (f"ep2{k} = (es{k}[0, 0] - eq{k}) * (es{k}[0, 0] - eq{k}) + (es{k}[1, 1] - eq{k}) * (es{k}[1, 1] - eq{k})"
+             f" + (es{k}[2, 2] - eq{k}) * (es{k}[2, 2] - eq{k}) + 2.0 * ep1{k}"),
+            f"ep{k} = sqrt(ep2{k} / 6.0)",
+            f"eb{k} = (es{k} - eq{k} * tack.identity(3)) / max(ep{k}, 1e-30)",
+            f"er{k} = min(max(0.5 * eb{k}.determinant(), -1.0), 1.0)",
+            f"ephi{k} = acos(er{k}) / 3.0",
+            f"ea{k} = eq{k} + 2.0 * ep{k} * cos(ephi{k})",
+            f"ec{k} = eq{k} + 2.0 * ep{k} * cos(ephi{k} + 2.0943951023931953)",
+        ]
+        return self.emit(f"tack.vec3(ea{k}, 3.0 * eq{k} - ea{k} - ec{k}, ec{k})", V)
+
+    def tensor_call(self, fn, c, t, pos):
+        """The tensor functions, or None for another function."""
+        def want(*types):
+            if tuple(t) != types:
+                names = ", ".join(types)
+                self.error(f"{fn}() takes ({names}), got ({', '.join(t)})", pos)
+
+        if fn in ("trace", "det", "transpose", "inv", "sym", "skew", "dev", "vonmises", "eigvals"):
+            want(M)
+            a = c[0]
+            if fn == "trace":
+                return self.emit(f"{a}.trace()", S)
+            if fn == "det":
+                return self.emit(f"{a}.determinant()", S)
+            if fn == "transpose":
+                return self.emit(f"{a}.transpose()", M)
+            if fn == "inv":
+                return self.emit(f"{a}.inverse()", M)
+            if fn == "sym":
+                return self.emit(f"0.5 * ({a} + {a}.transpose())", M)
+            if fn == "skew":
+                return self.emit(f"0.5 * ({a} - {a}.transpose())", M)
+            dev, _ = self.emit(f"{a} - ({a}.trace() / 3.0) * tack.identity(3)", M)
+            if fn == "dev":
+                return dev, M
+            if fn == "vonmises":
+                return self.emit(f"sqrt(1.5 * ({dev}.transpose() @ {dev}).trace())", S)
+            return self.eigvals(a)
+        if fn == "outer":
+            want(V, V)
+            return self.emit(f"{c[0]}.outer_product({c[1]})", M)
+        if fn == "ddot":
+            want(M, M)
+            return self.emit(f"({c[0]}.transpose() @ {c[1]}).trace()", S)
+        if fn in ("mag", "mag2") and t == [M]:
+            m2 = f"({c[0]}.transpose() @ {c[0]}).trace()"
+            return self.emit(f"sqrt({m2})" if fn == "mag" else m2, S)
+        if fn == "dot" and M in t and len(t) == 2:
+            if t[0] == S or t[1] == S:
+                self.error("dot() takes vectors and tensors; multiply by a scalar with '*'", pos)
+            return self.emit(f"{c[0]} @ {c[1]}", M if t == [M, M] else V)
+        return None
+
     def infix(self, tok, left):
         _, op, pos = tok
         bp, right_assoc = _INFIX[op]
@@ -694,13 +803,26 @@ class _Compiler:
         if op == "[":
             idx, _ = self.expr(0)
             self.expect("]")
-            self.need(left[1], V, pos)
+            if left[1] == S:
+                self.error("an index takes a vector's component or a tensor's row", pos)
             k = self.const_value(idx)
             if k not in (0.0, 1.0, 2.0):
-                self.error("a vector index must be 0, 1 or 2", pos)
+                self.error("an index must be 0, 1 or 2", pos)
+            if left[1] == M:
+                k = int(k)
+                return self.emit(f"tack.vec3({left[0]}[{k}, 0], {left[0]}[{k}, 1], {left[0]}[{k}, 2])", V)
             return self.emit(f"{left[0]}[{int(k)}]", S)
         (lc, lt), (rc, rt) = left, self.expr(bp - 1 if right_assoc else bp)
         if op in ("+", "-", "*", "/"):
+            if M in (lt, rt):
+                if op in ("+", "-") and lt != rt:
+                    self.error(f"a tensor {'adds to' if op == '+' else 'subtracts'} only a tensor", pos)
+                if op == "*" and S not in (lt, rt):
+                    self.error("'*' multiplies a tensor by a scalar; use dot() for products of tensors and vectors",
+                               pos)
+                if op == "/" and rt != S:
+                    self.error("a tensor divides only by a scalar", pos)
+                return self.emit(f"{lc} {op} {rc}", M)
             if op == "/" and rt == V and lt == S:
                 self.error("cannot divide a scalar by a vector", pos)
             return self.emit(f"{lc} {op} {rc}", V if V in (lt, rt) else S)
@@ -928,6 +1050,7 @@ class Compiled:
         self.text, self.make, self.mode, self.space = text, make, mode, space
         self.args, self.consts, self.types, self.names = args, consts, types, names
         self.sources, self.kernels = {}, {}
+        self.unit = None
 
     @property
     def type(self):
@@ -945,7 +1068,7 @@ class Compiled:
         return next(iter(self.sources.values()))
 
     def _allocate(self, data, t):
-        dtype = tack.vec3(data.dtype) if t == V else data.dtype
+        dtype = tack.vec3(data.dtype) if t == V else tack.mat3(data.dtype) if t == M else data.dtype
         # A point no cell uses is not written in the corner loop.
         alloc = tack.zeros if self.mode == "corners" else tack.empty
         return alloc((self.space.size,), dtype)
@@ -959,7 +1082,8 @@ class Compiled:
             given = out or {}
             outs = [given.get(n) if given.get(n) is not None else self._allocate(data, t)
                     for n, t in zip(self.names, self.types)]
-        results = [td.Field(self.space, o) for o in outs]
+        unit = self.unit if isinstance(self.unit, dict) else {None: self.unit}
+        results = [td.Field(self.space, o, unit.get(n)) for n, o in zip(self.names or [None], outs)]
         memo = {}
         payloads = [get(data, memo) for _, get in self.args]
         consts = [_scalar(data, v) for v in self.consts]
@@ -1019,7 +1143,7 @@ def _compile(texts, data, at, replace_invalid, names):
         c, parsed = parse_all(mode, False)
     results, types = [], []
     for result, rtype in parsed:
-        if replace_invalid is not None:
+        if replace_invalid is not None and rtype != M:
             rep, _ = c.const(replace_invalid)
             result, _ = c.emit(f"tack.select({result} - {result} == 0.0, {result}, {rep})", rtype)
         results.append(result)
@@ -1043,22 +1167,50 @@ def _compile(texts, data, at, replace_invalid, names):
     return compiled
 
 
-def compile_expression(text, data, at="cells", replace_invalid=None):
+def _prepared(sources, data, at, replace_invalid, names, fields, units):
+    """Compile through the tree passes of _front: names bound by the field dictionary, complex
+    values split, units checked and converted."""
+    from . import _front
+    labels, texts, result_units = {}, [], []
+    for k, source in enumerate(sources):
+        target = units.get(names[k]) if isinstance(units, dict) else units
+        text, labels, unit = _front.prepare(source, data, fields, target, labels)
+        texts.append(text)
+        result_units.append(unit)
+    with bound({**(_BINDINGS.get() or {}), **labels}):
+        compiled = _compile(texts, data, at, replace_invalid, names)
+    compiled.unit = result_units[0] if names is None else dict(zip(names, result_units))
+    return compiled
+
+
+def compile_expression(text, data, at="cells", replace_invalid=None, fields=None, units=None):
     """Parse text over data's fields and return a Compiled expression for output at.
 
     replace_invalid: a number that replaces NaN and infinite results, as
-    vtkArrayCalculator's ReplaceInvalidValues does."""
+    vtkArrayCalculator's ReplaceInvalidValues does.
+
+    fields: a tack_expr.FieldDictionary, or {name: unit}, giving the names the expression
+    may use and the units of fields that have none of their own (Field.unit). Units are
+    checked and converted where they meet, and with units ("kPa") the result is given in
+    them. compiled.unit is the result's unit, None when unknown."""
+    from ._front import needs_front
+    if needs_front(text, fields, units, data):
+        return _prepared([text], data, at, replace_invalid, None, fields, units)
     return _compile([text], data, at, replace_invalid, None)
 
 
-def compile_many(expressions, data, at="cells", replace_invalid=None):
+def compile_many(expressions, data, at="cells", replace_invalid=None, fields=None, units=None):
     """Several expressions, {name: text}, compiled into one kernel for output at: one
     launch, and each field read, derivative and conversion done once for all of them.
-    Calling the result gives {name: td.Field}."""
+    Calling the result gives {name: td.Field}. units: one unit for all, or {name: unit}."""
+    from ._front import needs_front
     if not expressions:
         raise ValueError("compile_many needs at least one expression")
     names = list(expressions)
-    return _compile([expressions[n] for n in names], data, at, replace_invalid, names)
+    sources = [expressions[n] for n in names]
+    if any(needs_front(s, fields, units, data) for s in sources):
+        return _prepared(sources, data, at, replace_invalid, names, fields, units)
+    return _compile(sources, data, at, replace_invalid, names)
 
 
 def _exchangeable(field):
@@ -1069,7 +1221,8 @@ def _exchangeable(field):
     return (on_points or on_cells) and isinstance(field.values, tack.Array)
 
 
-def evaluate(text, data, at="cells", replace_invalid=None, name=None, update_ghosts=False, project=False):
+def evaluate(text, data, at="cells", replace_invalid=None, name=None, update_ghosts=False, project=False,
+             fields=None, units=None):
     """Evaluate text over data's fields at 'cells', 'points', 'faces' or a space.
 
     Returns a td.Field in the output space; with name, also stores it in data.fields.
@@ -1084,26 +1237,32 @@ def evaluate(text, data, at="cells", replace_invalid=None, name=None, update_gho
     on the ghost layer too.
 
     project=True with an H1 output evaluates into L2 of the same order and averages
-    into H1 with td.project, for expressions of fields that are not continuous."""
+    into H1 with td.project, for expressions of fields that are not continuous.
+
+    fields and units: as compile_expression's; the field's unit is the result's."""
     if isinstance(data, td.PartitionedDataSet):
         pieces = list(data)
         if update_ghosts and pieces:
-            first = compile_expression(text, pieces[0], at(pieces[0]) if callable(at) else at, replace_invalid)
+            first = compile_expression(text, pieces[0], at(pieces[0]) if callable(at) else at, replace_invalid,
+                                       fields, units)
             names = [n for n in first.fields if _exchangeable(pieces[0].fields[n])]
             if names:
                 td.update_ghosts(data, *names)
         return [evaluate(text, piece, at(piece) if callable(at) else at, replace_invalid, name,
-                         project=project) for piece in pieces]
+                         project=project, fields=fields, units=units) for piece in pieces]
     if project and isinstance(at, td.H1):
         try:
             staging = td.L2(data, order=max(at.order, 1))
-            staged = compile_expression(text, data, staging, replace_invalid)(data)
-        except (TypeError, ValueError, NotImplementedError):
+            compiled = compile_expression(text, data, staging, replace_invalid, fields, units)
+        except (TypeError, ValueError, NotImplementedError) as error:
+            if isinstance(error, ExprError):
+                raise
             staging = td.L2(data, order=max(at.order, 1), basis="equispaced")
-            staged = compile_expression(text, data, staging, replace_invalid)(data)
-        field = td.project(data, staged, at)
+            compiled = compile_expression(text, data, staging, replace_invalid, fields, units)
+        field = td.project(data, compiled(data), at)
     else:
-        field = compile_expression(text, data, at, replace_invalid)(data)
+        compiled = compile_expression(text, data, at, replace_invalid, fields, units)
+        field = compiled(data)
     if name is not None:
         data.fields[name] = field
     return field

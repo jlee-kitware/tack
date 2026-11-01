@@ -145,6 +145,8 @@ class Derivative:
         field = p.lookup(name, pos)
         value, t = p.field(name, pos)
         kind = P._kind(field)
+        if t == P.M:
+            self.error("derivatives of tensor fields inside an expression are not implemented", pos)
         if kind in ("hdiv", "hcurl"):
             self.error(f"derivatives of {type(field.space).__name__} fields inside an expression "
                        "are not implemented", pos)
@@ -279,6 +281,8 @@ class Derivative:
         if fn == "not":
             check(S)
             return self.emit(f"tack.select({c[0]} == 0.0, 1.0, 0.0)", S), S, None
+        if fn in ("trace", "det", "transpose", "inv", "sym", "skew", "dev", "outer", "ddot", "vonmises", "eigvals"):
+            raise self.failure(f"derivatives of tensor expressions such as {fn}() are not implemented", pos)
         raise self.failure(f"unknown function '{fn}'", pos)
 
     def second(self, fn, pos):
