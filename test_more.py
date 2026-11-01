@@ -293,6 +293,20 @@ if hasattr(td, "HDiv"):
           np.linalg.norm(np.stack([1 + 2 * x1[:, 0], 3 - x1[:, 1], 0.5 + 4 * x1[:, 2]], axis=1), axis=1))
     check("G * 2 (HCurl) at cells vs (2, -4, 1)", fx.evaluate("G * 2", v).values.numpy(),
           np.tile([2.0, -4.0, 1.0], (v.num_cells, 1)))
+    if hasattr(td, "hcurl_curl"):
+        @tack.kernel
+        def rotation_integrals(edges, out):
+            for i in edges:
+                x0 = edges.corner_position(i, 0)
+                x1 = edges.corner_position(i, 1)
+                m = 0.5 * (x0 + x1)
+                out[edges.entity_id(i)] = tack.vec3(-m[1], m[0], 0.0).dot(x1 - x0)
+
+        ri = tack.empty((td.HCurl(v).size,), v.dtype)
+        td.for_each(rotation_integrals, v, "edges", ri)
+        v.fields["R"] = td.Field(td.HCurl(v), ri)
+        check("curl(R) of the HCurl rotation (-y, x, 0) vs (0, 0, 2)", fx.evaluate("curl(R)", v).values.numpy(),
+              np.tile([0.0, 0.0, 2.0], (v.num_cells, 1)))
     try:
         fx.compile_expression("F", v, at="points")
         print("  FAIL  F at points was accepted")

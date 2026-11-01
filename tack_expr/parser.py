@@ -127,6 +127,7 @@ class _Compiler:
         self.uses_world_gradient = False
         self.uses_vector_spaces = False
         self.uses_derivatives = False
+        self.uses_hcurl_curl = False
         self.uses_pc = False
 
     # --- emission -------------------------------------------------------
@@ -417,6 +418,10 @@ class _Compiler:
                 f"    dv{k} += {a}[dom.face_id(c, k{k})] * (1.0 if dom.face_side(c, k{k}) == 0 else -1.0)",
             ]
             return self.load(f"div:{name}", f"dv{k} / dom.geometry_jacobian(c, {pc}).determinant()", S)
+        if _kind(field) == "hcurl" and fn == "curl":
+            self.uses_hcurl_curl = True
+            u = self.arg("field", name, getter)
+            return self.load(f"curl:{name}", f"hcurl_curl(dom, {u}, c, {self.pc(pos)})", V)
         if _kind(field) != "basis":
             self.error(f"{fn}() takes a field with a basis", pos)
         pc = self.pc(pos)
@@ -775,9 +780,12 @@ def _node_variant(space, shape):
     """Which node loop fills space on cells of shape, and its node list or count."""
     from tack.dataset import bases
     if isinstance(space, td.H1):
-        if space._any_order(shape):
+        any_order = getattr(space, "reads_any_order", None) or space._any_order
+        if any_order(shape):
             return "listed", space.stored_nodes(shape)
-        from tack.dataset.algorithms.project import _quadratic_count
+        if hasattr(space, "quadratic_count"):
+            return "quadratic", space.quadratic_count(shape)
+        from tack.dataset.algorithms.project import _quadratic_count  # a Tack without the public one
         return "quadratic", _quadratic_count(space, shape)
     if not space.tensor:
         return ("center" if space.order == 0 else "corners"), None
@@ -808,6 +816,8 @@ def _imports(c):
         imports += "from tack.dataset import hcurl_value, hdiv_value\n"
     if c.uses_derivatives:
         imports += "from tack_expr import _ad as ad\n"
+    if c.uses_hcurl_curl:
+        imports += "from tack.dataset import hcurl_curl\n"
     return imports + (_GRADIENT_IMPORT if c.uses_world_gradient else "")
 
 
