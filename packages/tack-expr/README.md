@@ -36,7 +36,7 @@ element data.
 Field expressions give Tack an end-user layer: a way to compute derived quantities on any
 `tack.dataset` field without writing a kernel. Kernel authors, who write solvers and new filters,
 keep writing Python with `world_gradient` and the views. Application users, agents and
-configuration (steering, Catalyst scripts, the trame box, notebooks) write expressions.
+configuration (steering, Catalyst scripts, trame apps, notebooks) write expressions.
 
 **One expression works on every function space.** A derived quantity's kernel spends most of its
 code on reading its inputs: vector components split into scalars for `world_gradient`, launch
