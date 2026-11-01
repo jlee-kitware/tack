@@ -10,7 +10,11 @@ def component(values, k, out, n):
 
 
 @tack.kernel
-def entry_cells(cells, entries, out, n):
+def entry_cells(cells, entries, out, n, start, end):
+    """The cell of each link entry in [start, end): one cell group's corners in the
+    topology's corner layout, NUM_POINTS per cell."""
     for i in range(n):
-        out[i] = cells.entity_id(entries[i] // cells.NUM_POINTS)
+        e = entries[i]
+        if e >= start and e < end:
+            out[i] = cells.entity_id((e - start) // cells.NUM_POINTS)
 

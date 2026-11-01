@@ -28,7 +28,7 @@ by entity. Data on other entities needs an explicit operator:
 
 | Operator | Meaning |
 | --- | --- |
-| `points(T)` | cell data averaged at each point, as `vtkCellDataToPointData` |
+| `points(T)` | cell data averaged at each point, as `vtkCellDataToPointData`, inside the kernel on every mesh but polyhedra |
 | `cells(T)` | point data averaged over each cell, as `vtkPointDataToCellData` |
 | `owner(T)`, `neighbor(T)` | in a face expression, the cell value on side 0 or 1 |
 | `fsum(F)` | in a cell expression, the outward sum of a face field over the cell's faces |

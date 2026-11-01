@@ -318,7 +318,10 @@ class _Compiler:
         if kind not in ("basis", "values-cells"):
             self.error("points() takes cell data or a field with a basis", pos)
         constant = kind == "values-cells" or isinstance(field.space, td.Constant)
-        links = _single_shape_links(self.data) if constant and self.mode == "pointloop" else None
+        pid = "p" if self.mode == "pointloop" else "dom.point_id(c, j)"
+        if constant and _grid_dims(self.data) is not None:
+            return self.points_on_grid(name, pid, t)
+        links = _point_links(self.data) if constant else None
         if links is None:
             # A pass through td.project, which averages any source.
             projected = td.project(self.data, field, td.H1(self.data))
@@ -330,10 +333,39 @@ class _Compiler:
         ec = self.raw("links:cells", lambda d, m: cells_of_entry)
         a = self.raw(name, self.by_name(name))
         k = len(self.lines)
-        self.lines += [f"s{k} = 0.0 * {a}[0]",
-                       f"for e{k} in range({lo}[p], {lo}[p + 1]):",
+        self.lines += [f"q{k} = {pid}",
+                       f"s{k} = 0.0 * {a}[0]",
+                       f"for e{k} in range({lo}[q{k}], {lo}[q{k} + 1]):",
                        f"    s{k} += {a}[{ec}[e{k}]]"]
-        return self.load(f"points:{name}", f"s{k} / float(max({lo}[p + 1] - {lo}[p], 1))", t)
+        return self.load(f"points:{name}", f"s{k} / float(max({lo}[q{k} + 1] - {lo}[q{k}], 1))", t)
+
+    def points_on_grid(self, name, pid, t):
+        """points(T) of cell data on a structured grid: the mean over the up to 8 cells around
+        each point, found by index arithmetic."""
+        D = self.raw("grid:dims", lambda d, m: _grid_dims(d))
+        a = self.raw(name, self.by_name(name))
+        k = len(self.lines)
+        ok = " * ".join(f"tack.select({v}{k} {op} {bound}, 1.0, 0.0)"
+                        for v, i in (("gx", 3), ("gy", 4), ("gz", 5))
+                        for op, bound in ((">=", "0"), ("<", f"{D}[{i}]")))
+        self.lines += [
+            f"q{k} = {pid}",
+            f"ix{k} = q{k} % {D}[0]",
+            f"iy{k} = (q{k} // {D}[0]) % {D}[1]",
+            f"iz{k} = q{k} // ({D}[0] * {D}[1])",
+            f"s{k} = 0.0 * {a}[0]",
+            f"w{k} = 0.0",
+            f"for n{k} in range(8):",
+            f"    gx{k} = ix{k} - 1 + n{k} % 2",
+            f"    gy{k} = iy{k} - 1 + (n{k} // 2) % 2",
+            f"    gz{k} = iz{k} - 1 + n{k} // 4",
+            f"    ok{k} = {ok}",
+            f"    cell{k} = min(max(gx{k}, 0), {D}[3] - 1) + {D}[3] * (min(max(gy{k}, 0), {D}[4] - 1)"
+            f" + {D}[4] * min(max(gz{k}, 0), {D}[5] - 1))",
+            f"    s{k} += ok{k} * {a}[cell{k}]",
+            f"    w{k} += ok{k}",
+        ]
+        return self.load(f"points:{name}", f"s{k} / w{k}", t)
 
     def side(self, fn, name, pos):
         """owner(T), neighbor(T): a cell value on side 0 or 1 of the face."""
@@ -659,21 +691,44 @@ def _components(field):
     return parts
 
 
-def _single_shape_links(data):
-    """(offsets, cell of each link) for a mesh of one cell shape, else None."""
-    from tack.dataset.topology import UnstructuredTopology
+def _grid_dims(data):
+    """[nx, ny, nz, cx, cy, cz] (points and cells per axis) for a structured grid whose
+    points and cells are numbered x fastest on its own axes, else None. A grid with a
+    size of 1 before a larger axis has its axes renumbered, and goes through td.project."""
     topology = data.topology
-    if not isinstance(topology, UnstructuredTopology):
+    if not isinstance(topology, td.StructuredTopology):
         return None
-    groups = [g for g in topology.groups() if g.count]
-    if len(groups) != 1 or not getattr(topology, "reference_cells", True):
+    dims = list(getattr(topology, "point_dims", ()))
+    if not dims or len(dims) > 3:
         return None
-    key = id(topology)
+    dims += [1] * (3 - len(dims))
+    if any(dims[a] == 1 and any(d > 1 for d in dims[a + 1:]) for a in range(3)):
+        return None
+    key = ("grid", id(topology))
+    if key not in _links_cache:
+        cells = [max(d - 1, 1) for d in dims]
+        _links_cache[key] = (topology, tack.array(np.array(dims + cells, dtype=np.int32)))
+    return _links_cache[key][1]
+
+
+def _point_links(data):
+    """(offsets, cell of each link) for an unstructured mesh of reference cells, one shape
+    or several, else None (polyhedra)."""
+    from tack.dataset.topology import UnstructuredTopology, corner_layout
+    topology = data.topology
+    if not isinstance(topology, UnstructuredTopology) or not getattr(topology, "reference_cells", True):
+        return None
+    key = ("links", id(topology))
     if key not in _links_cache:
         offsets, entries = topology.point_links()
-        cells = tack.empty((entries.shape[0],), tack.i32)
-        if entries.shape[0]:
-            entry_cells(groups[0].view(), entries, cells, entries.shape[0])
+        start_of, total = corner_layout(topology)
+        n = entries.shape[0]
+        cells = tack.empty((n,), tack.i32)
+        for group in topology.groups():
+            if group.count and n:
+                start = start_of[group]
+                view = group.view()
+                entry_cells(view, entries, cells, n, start, start + group.count * group.shape.NUM_POINTS)
         _links_cache[key] = (topology, (offsets, cells))
     return _links_cache[key][1]
 
