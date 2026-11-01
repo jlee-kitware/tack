@@ -98,6 +98,10 @@ algorithms that work on them are in [Algorithms](algorithms.md).
 
 ::: tack.dataset.SideTraces
 
+::: tack.dataset.HDiv
+
+::: tack.dataset.HCurl
+
 ::: tack.dataset.bases
     options: {members: [FAMILIES, BERNSTEIN, nodes, weights, bernstein, dof_tables, tensor_shape]}
 
@@ -155,6 +159,12 @@ algorithms that work on them are in [Algorithms](algorithms.md).
 ## Kernels over meshes
 
 ::: tack.dataset.for_each
+
+::: tack.dataset.world_gradient
+
+::: tack.dataset.hdiv_value
+
+::: tack.dataset.hcurl_value
 
 ## Filters of your own
 
