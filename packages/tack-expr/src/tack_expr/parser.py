@@ -824,7 +824,9 @@ def _node_variant(space, shape):
             return "listed", space.stored_nodes(shape)
         if hasattr(space, "quadratic_count"):
             return "quadratic", space.quadratic_count(shape)
-        from tack.dataset.algorithms.project import _quadratic_count  # a Tack without the public one
+        from tack.dataset.algorithms.project import (
+            _quadratic_count,  # a Tack without the public one
+        )
         return "quadratic", _quadratic_count(space, shape)
     if not space.tensor:
         return ("center" if space.order == 0 else "corners"), None

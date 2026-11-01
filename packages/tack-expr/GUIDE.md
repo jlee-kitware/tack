@@ -41,7 +41,7 @@ by entity. Data on other entities needs an explicit operator:
 `grad()` and the others also take an expression, such as `grad(T * P)` or `qcrit(U / (1 + u))`.
 The kernel carries each value's derivative alongside it (a gradient for a scalar, a Jacobian for a
 vector) and applies the chain rule, so the result is exact wherever the expression is
-differentiable, at any order. `test_derivatives.py` checks 16 such expressions against central
+differentiable, at any order. `tests/test_expr_derivatives.py` checks 16 such expressions against central
 differences of the exact fields.
 
 Second derivatives nest: `div(grad(u))`, `grad(grad(u)[0])`, `curl(curl(U))` and `laplacian(u * v)`
@@ -49,7 +49,7 @@ carry each scalar's Hessian as well. A field's Hessian differentiates its world 
 parametric axes with a fourth-order stencil, exact for fields up to order 4 on cells that map
 affinely (uniform grids, tetrahedra) and fourth-order accurate on curved ones; in float32 the
 stencil leaves about 1e-4 of rounding. These kernels take seconds to compile the first time.
-`test_second.py` checks them, in float32 and float64. `HDiv` and `HCurl` fields, on a Tack with those spaces, are read
+`tests/test_expr_second.py` checks them, in float32 and float64. `HDiv` and `HCurl` fields, on a Tack with those spaces, are read
 through their Piola maps, and `div()` of an `HDiv` field is its outward flux over the cell's
 volume.
 
@@ -57,7 +57,7 @@ A `td.PartitionedDataSet` runs piece by piece; with a ghost layer, what each pie
 whole mesh's result. For pieces made by `td.ghost_cells` or `td.ghost_points`,
 `update_ghosts=True` refreshes the ghost values of the fields an expression reads from the pieces
 that own them (across MPI ranks too, through Tack's exchange), so a chain of evaluations that
-average over neighbours stays right; `test_ghosts.py` shows the difference.
+average over neighbours stays right; `tests/test_expr_pieces.py` shows the difference.
 
 ## Several at once
 
@@ -74,7 +74,7 @@ as it takes a stored field, and `fx.contour(expression, data, value)` does so wi
 its inputs' order calls for. Each crossing is the expression's own root along its sub-edge, and an
 expression of continuous fields shares its points between cells, so its surface is watertight.
 With no Bernstein bound to skip cells by, a subdivided contour refines every cell.
-`test_contour.py` compares with contours of stored fields and with the exact level.
+`tests/test_expr_contour.py` compares with contours of stored fields and with the exact level.
 
 ## In other kernels
 
@@ -83,16 +83,32 @@ With no Bernstein bound to skip cells by, a subdivided contour refines every cel
 `fx.for_each(kernel, data, function, *args)` runs a kernel that calls it, so a threshold or a
 reduction can use an expression without storing it.
 
-## Checks
+## Checks and examples
 
-- `test_dataset.py`: the calculator syntax against `vtkArrayCalculator`, conversions against VTK's
-  filters, tetrahedra, order-2 fields, face operators.
-- `test_more.py`: `div`/`curl`/`qcrit` against `td.flow_quantities`, fused conversions, functions
-  in kernels, node outputs, polyhedra, float64, invalid values, reuse after updates, partitioned
-  data, `HDiv`/`HCurl`.
+The tests in `tests/` run with Tack's suite, once per available backend:
 
 ```bash
-~/gitsync/tack/.venv/bin/python test_dataset.py cuda
-~/gitsync/tack/.venv/bin/python test_more.py cpu
+uv run pytest packages/tack-expr/tests
+uv run pytest packages/tack-expr/tests/test_expr_vtk.py    # the comparisons with VTK
 ```
 
+- `test_expr_vtk.py`: the calculator syntax against `vtkArrayCalculator`, conversions against
+  VTK's filters, tetrahedra, polyhedra, float64, invalid values.
+- `test_expr_spaces.py`: order-2 fields, face operators, `H1` targets, `HDiv` and `HCurl`.
+- `test_expr_derivatives.py`, `test_expr_second.py`: first and second derivatives against
+  central differences, `td.gradients` and `td.flow_quantities`.
+- `test_expr_many.py`: `compile_many` against one kernel each.
+- `test_expr_points.py`: `points()` on every mesh kind, with no `td.project` call.
+- `test_expr_pieces.py`: pieces with a ghost layer, and the ghost refresh.
+- `test_expr_contour.py`: contours of expressions.
+- `test_expr_kernels.py`: expressions in other kernels, reuse after updates, the module cache.
+
+The examples run on a field whose answers are known, and check them:
+
+- `examples/50_field_expressions.py`: values, derivatives, and several expressions in one kernel.
+- `examples/51_expressions_unstored.py`: an expression in a kernel of your own, in a contour,
+  and on pieces, and the time one kernel for four fields saves.
+
+```bash
+uv run python packages/tack-expr/examples/50_field_expressions.py --arch cuda
+```
