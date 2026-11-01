@@ -98,8 +98,13 @@ class Expr:
         return _Call("not", self)
 
     def __getitem__(self, k):
+        if isinstance(k, tuple):
+            out = self
+            for i in k:
+                out = out[i]
+            return out
         if k not in (0, 1, 2):
-            raise IndexError("a vector expression has components 0, 1 and 2")
+            raise IndexError("a vector has components 0, 1 and 2, and a tensor rows 0, 1 and 2")
         return _Index(self, k)
 
     @property
@@ -130,33 +135,48 @@ class Expr:
 
     # --- evaluation -------------------------------------------------------
 
-    def eval(self, data, at="cells", replace_invalid=None, name=None, project=False):
+    def _prepare(self, data, fields=None, units=None):
+        """(text, names, unit): through the tree passes when fields, units or complex values
+        call for them."""
+        from . import _front
+        if fields is not None or units is not None or _front.needs_tree(self):
+            return _front.prepare(self, data, fields, units)
+        return (*self.render(data), None)
+
+    def eval(self, data, at="cells", replace_invalid=None, name=None, project=False, fields=None, units=None):
         """The expression at ``at`` ("cells", "points", "faces" or a space of ``data``'s), a
-        td.Field; with ``name``, also put in ``data.fields``."""
+        td.Field; with ``name``, also put in ``data.fields``. fields and units: as
+        tack_expr.evaluate's."""
+        from . import _front
+        if fields is not None or units is not None or _front.needs_tree(self):
+            return P.evaluate(self, data, at=at, replace_invalid=replace_invalid, name=name, project=project,
+                              fields=fields, units=units)
         text, names = self.render(data)
         with P.bound(names):
             return P.evaluate(text, data, at=at, replace_invalid=replace_invalid, name=name, project=project)
 
-    def compile(self, data, at="cells", replace_invalid=None):
+    def compile(self, data, at="cells", replace_invalid=None, fields=None, units=None):
         """A Compiled kernel, called as ``compiled(data)`` as often as the values change."""
-        text, names = self.render(data)
+        text, names, unit = self._prepare(data, fields, units)
         with P.bound(names):
-            return P.compile_expression(text, data, at, replace_invalid)
+            compiled = P.compile_expression(text, data, at, replace_invalid)
+        compiled.unit = unit
+        return compiled
 
-    def field(self, data):
+    def field(self, data, fields=None, units=None):
         """A td.Field computed wherever an algorithm reads it, stored nowhere."""
-        text, names = self.render(data)
+        text, names, _ = self._prepare(data, fields, units)
         with P.bound(names):
             return lazy.field(text, data)
 
-    def contour(self, data, value, **kwargs):
-        text, names = self.render(data)
+    def contour(self, data, value, fields=None, units=None, **kwargs):
+        text, names, _ = self._prepare(data, fields, units)
         with P.bound(names):
             return lazy.contour(text, data, value, **kwargs)
 
-    def function(self, data, at="cells"):
+    def function(self, data, at="cells", fields=None, units=None):
         """The expression as a device class for kernels of your own (tack_expr.for_each)."""
-        text, names = self.render(data)
+        text, names, _ = self._prepare(data, fields, units)
         with P.bound(names):
             return P.function(text, data, at)
 
@@ -213,6 +233,9 @@ def _wrap(value):
         return _Const(1.0 if value else 0.0)
     if isinstance(value, numbers.Real):
         return _Const(float(value))
+    if isinstance(value, numbers.Complex):
+        from ._front import _Complex
+        return _Complex(float(value.real), float(value.imag))
     raise TypeError(f"an expression combines fields, expressions and numbers, not {type(value).__name__}")
 
 
@@ -235,7 +258,7 @@ class _Ref(Expr):
         out.append(self)
 
     def _text(self, names):
-        return self.name
+        return self.name if self.name.isidentifier() else f'"{self.name}"'
 
 
 class _Const(Expr):
@@ -374,6 +397,23 @@ dot = _function("dot", "The dot product of two vectors.")
 cross = _function("cross", "The cross product of two vectors.")
 clamp = _function("clamp", "clamp(lo, x, hi).")
 minimum = _function("min", "The smaller of two scalars.")
+trace = _function("trace", "A tensor's trace.")
+det = _function("det", "A tensor's determinant.")
+transpose = _function("transpose", "A tensor's transpose.")
+inv = _function("inv", "A tensor's inverse.")
+sym = _function("sym", "A tensor's symmetric part.")
+skew = _function("skew", "A tensor's antisymmetric part.")
+dev = _function("dev", "A tensor's deviatoric part, less a third of its trace on the diagonal.")
+outer = _function("outer", "The tensor product of two vectors.")
+ddot = _function("ddot", "The double contraction of two tensors, A:B.")
+vonmises = _function("vonmises", "The von Mises equivalent of a stress tensor.")
+eigvals = _function("eigvals", "The eigenvalues of a tensor's symmetric part, largest first.")
+identity = _Name("identity")
+real = _function("real", "A complex value's real part.")
+imag = _function("imag", "A complex value's imaginary part.")
+conj = _function("conj", "A complex value's conjugate.")
+arg = _function("arg", "A complex value's angle, atan2(imag, real).")
+phase = _function("phase", "phase(z, angle): the real part of z exp(i angle), a harmonic response at that phase.")
 maximum = _function("max", "The larger of two scalars.")
 cells = _field_only("cells")
 points = _field_only("points")

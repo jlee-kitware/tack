@@ -1,19 +1,29 @@
 """Field expressions for Tack: VTK calculator syntax over tack.dataset fields, and the same
 expressions written with Python operators on td.Fields."""
 
+from .dictionary import Entry, FieldDictionary, cgns
 from .lazy import contour, field
 from .ops import (
     Expr,
+    arg,
     cells,
     clamp,
     compile_many,
+    conj,
     coords,
     cross,
     curl,
+    ddot,
+    det,
+    dev,
     div,
     dot,
+    eigvals,
     fsum,
     grad,
+    identity,
+    imag,
+    inv,
     laplacian,
     mag,
     mag2,
@@ -21,12 +31,20 @@ from .ops import (
     minimum,
     neighbor,
     norm,
+    outer,
     owner,
+    phase,
     pi,
     points,
     qcrit,
+    real,
     ref,
+    skew,
+    sym,
+    trace,
+    transpose,
     vec,
+    vonmises,
     where,
 )
 from .parser import (
@@ -40,7 +58,9 @@ from .parser import (
     function,
 )
 
-__all__ = ["Compiled", "Expr", "ExprError", "Function", "cells", "clamp", "clear_cache", "compile_expression",
-           "compile_many", "contour", "coords", "cross", "curl", "div", "dot", "evaluate", "field", "for_each",
-           "fsum", "function", "grad", "laplacian", "mag", "mag2", "maximum", "minimum", "neighbor", "norm",
-           "owner", "pi", "points", "qcrit", "ref", "vec", "where"]
+__all__ = ["Compiled", "Entry", "Expr", "ExprError", "FieldDictionary", "Function", "arg",
+           "cells", "cgns", "clamp", "clear_cache", "compile_expression", "compile_many", "conj", "contour",
+           "coords", "cross", "curl", "ddot", "det", "dev", "div", "dot", "eigvals", "evaluate", "field", "for_each", "fsum", "function",
+           "grad", "identity", "imag", "inv", "laplacian", "mag", "mag2", "maximum", "minimum", "neighbor", "norm", "outer", "owner",
+           "phase", "pi", "points", "qcrit", "real", "ref", "skew", "sym", "trace",
+           "transpose", "vec", "vonmises", "where"]
