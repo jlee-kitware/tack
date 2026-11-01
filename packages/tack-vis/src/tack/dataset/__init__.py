@@ -107,6 +107,7 @@ from tack.dataset.algorithms import (
     voxelize,
     warp,
 )
+from tack.dataset.algorithms.gradients import world_gradient
 from tack.dataset.amr import AMRDataSet
 from tack.dataset.carry import Interpolate, Pieces, Same, Take, carry
 from tack.dataset.dataset import (
@@ -152,6 +153,7 @@ from tack.dataset.temporal import (
     extend_paths,
 )
 from tack.dataset.topology import StructuredTopology, UnstructuredTopology
+from tack.dataset.vector_spaces import HCurl, HDiv, hcurl_value, hdiv_value
 
 __all__ = [
     "H1",
@@ -171,6 +173,8 @@ __all__ = [
     "FlowQuantities",
     "Ghosts",
     "GlobalIds",
+    "HCurl",
+    "HDiv",
     "Interpolate",
     "Intersection",
     "Locations",
@@ -244,6 +248,8 @@ __all__ = [
     "glyphs",
     "gradients",
     "halo_catalog",
+    "hcurl_value",
+    "hdiv_value",
     "implicit",
     "implicit_values",
     "interpolate",
@@ -300,4 +306,5 @@ __all__ = [
     "voxelize",
     "warp",
     "wavelet",
+    "world_gradient",
 ]
