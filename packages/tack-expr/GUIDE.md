@@ -77,8 +77,9 @@ fx.evaluate("dot(S, norm(coords))", data)            # traction on a sphere
 `trace`, `det`, `transpose`, `inv`, `sym`, `skew`, `dev`, `ddot` (A:B), `outer` of two vectors,
 `vonmises`, `eigvals` (of the symmetric part) and `mag` (Frobenius) take tensors; `dot` is the
 matrix product of tensors and vectors in any order. `S[i]` is a row, `S[i][j]` and `S_XY`
-entries. `+` and `-` take two tensors, `*` and `/` a tensor and a scalar. Derivatives of tensor
-expressions, `div(S)` among them, are not implemented yet.
+entries. `+` and `-` take two tensors, `*` and `/` a tensor and a scalar. `div()` of a tensor
+field or expression is its rows' divergences, and `laplacian()` of a vector its components'
+Laplacians, so `div(S) + f` is an equilibrium residual.
 
 ## Complex values
 
@@ -95,7 +96,9 @@ fx.evaluate("vonmises(phase(S, pi / 2))", data)  # S a complex stress: the von M
 Arithmetic, `exp`, the derivatives and the linear and bilinear functions (`dot`, `cross`,
 `outer`, `ddot`, `trace`, ...) take complex values; `real`, `imag`, `abs`, `arg`, `conj`,
 `mag` and `phase` end in real ones. A comparison, or a function of real values only, refuses
-a complex argument, and an expression whose result is complex asks which real part to take.
+a complex argument. `fx.evaluate` of an expression whose result is complex asks which real part
+to take, and `fx.evaluate_complex` returns its real and imaginary parts as two fields from one
+kernel.
 Complex values are split into their real and imaginary parts before code generation, so the
 kernel is of real fields.
 
@@ -202,7 +205,10 @@ reads it, through its view's `value` and `corner_value`; nothing is stored. `td.
 as it takes a stored field, and `fx.contour(expression, data, value)` does so with the subdivision
 its inputs' order calls for. Each crossing is the expression's own root along its sub-edge, and an
 expression of continuous fields shares its points between cells, so its surface is watertight.
-With no Bernstein bound to skip cells by, a subdivided contour refines every cell.
+An expression field bounds its values in each cell by interval arithmetic over its inputs'
+Bernstein bounds, so a subdivided contour refines only the cells that can hold the level; an
+expression with a derivative, or a function with no interval rule, refines every cell.
+`tests/test_expr_bounds.py` checks the bounds.
 `tests/test_expr_contour.py` compares with contours of stored fields and with the exact level.
 
 ## In other kernels
