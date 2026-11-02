@@ -31,8 +31,10 @@ with further grouping for varying space order or size buckets. `NUM_POINTS`
 is consequently a constant for this kernel specialization. It is eight for
 a hex and five for a pyramid; the source stays the same.
 
-This corner mean is a teaching algorithm. It is not a general quadrature
-rule for integrating a field over an arbitrary cell.
+This corner mean is a teaching algorithm. It is not a cell's average,
+except for a linear field on a tetrahedron or an image's box; `td.project`
+into `td.Constant(data)` gives the average, by quadrature through each cell's
+map ([Projection is an algorithmic choice](create-fields.md#projection-is-an-algorithmic-choice)).
 
 ## Use global ids for global output
 
@@ -143,6 +145,9 @@ use [probing](06-pipelines.md#sample-at-physical-positions) when query positions
 are given in world coordinates.
 
 ## Compute one oriented flux per face
+
+For a complete cell/face workflow with units, conservation checks and Perot
+velocity reconstruction, see [Finite-volume Data and Fluxes](18-finite-volume.md).
 
 A face has side 0 and possibly side 1. Its normal points out of side 0;
 `faces.num_sides(f) == 1` identifies a boundary face. Reading a neighbouring

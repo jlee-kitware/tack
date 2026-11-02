@@ -52,7 +52,8 @@ piece.
   kernel refuses arrays from two devices.
 - **Arrays may be implicit.** An image's geometry is a `UniformCoordinates`
   array, which computes positions instead of storing them, and has no
-  `.shape`: `size_of` gives its length. Pass it to a kernel as it is, since
+  `.shape`: `size_of` or `len` gives its length, and `positions[i]` reads one
+  position on the host as it does from a stored array. Pass it to a kernel as it is, since
   kernels index implicit arrays (`positions[i]`, `len(positions)`); the
   kernel computes each position as it reads it. `materialize` stores every
   value, which an image of a billion points cannot afford: keep it for code
@@ -189,6 +190,6 @@ The check holds each rewrite to its built-in, on the image, its tetrahedra
 and a ghosted piece, and a threshold with bounds in degrees Celsius and
 kelvin to the built-in's. [Download the complete program](../examples/data_filters.py).
 
-Continue with [Sample and Connect Simulations](06-pipelines.md) to connect
+Continue with [Sample and Trace Fields](06-pipelines.md) to connect
 filters into a workflow, or [Pieces and Blocks](14-communication.md)
 to write one that exchanges data between pieces.
