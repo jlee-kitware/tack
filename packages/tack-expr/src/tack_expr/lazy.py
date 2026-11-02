@@ -1,8 +1,9 @@
 """An expression as a field evaluated where an algorithm reads it, never stored.
 
 fx.field(text, data) is a td.Field whose view computes the expression at each point an
-algorithm asks for: value(c, pc), corner_value(c, j), and an unbounded value_range for
-the algorithms that skip cells by their Bernstein bound. td.contour takes it as it takes
+algorithm asks for: value(c, pc), corner_value(c, j), and value_range(c), a bound in each
+cell by interval arithmetic on its fields' Bernstein bounds, for the algorithms that skip
+cells by it (unbounded where the expression has no rule). td.contour takes it as it takes
 a stored field; fx.contour does so with the subdivision its inputs' order calls for.
 """
 
@@ -70,9 +71,21 @@ def _method(lines, result, prefix, name, signature, head=()):
     return f"\n    @tack.func\n    def {name}({signature}):\n" + "".join(f"        {b}\n" for b in body)
 
 
-def field(text, data):
+def field(text, data, fields=None, units=None):
     """The expression as a td.Field evaluated wherever it is read: by contour, clip,
-    probe and the other algorithms that read a field through its view."""
+    probe and the other algorithms that read a field through its view. fields and units:
+    as tack_expr.evaluate's; the field's unit is the expression's."""
+    from . import _front
+    if _front.needs_front(text, fields, units, data) or _front.expands(text, data):
+        text, names, unit = _front.prepare(text, data, fields, units)
+        with P.bound({**(P._BINDINGS.get() or {}), **names}):
+            f = _field(text, data)
+        f.space.names = names
+        return td.Field(f.space, f.values, unit)
+    return _field(text, data)
+
+
+def _field(text, data):
     c = P._Compiler(text, data, "cells")
     result, rtype = c.parse()
     if rtype != P.S:
@@ -92,8 +105,13 @@ def field(text, data):
     except (P.ExprError, P._NeedCorners):
         methods += ("\n    @tack.func\n    def corner_value(self, c, j):\n"
                     "        return self.value(c, self.dom.parametric_point(j))\n")
-    methods += ("\n    @tack.func\n    def value_range(self, c):\n"
-                "        return -3.0e38, 3.0e38\n")
+    ranges = _ranges(text, data)
+    if ranges is None:
+        methods += ("\n    @tack.func\n    def value_range(self, c):\n"
+                    "        return -3.0e38, 3.0e38\n")
+    else:
+        methods += ranges[0]
+        parts.append(("R", ranges[1], []))
     # Exact crossings read stored fields' entity values through dof; an expression has none
     # and is read through value there, but the method has to exist for the kernel to build.
     methods += ("\n    @tack.func\n    def dof(self, c, k):\n"
@@ -106,18 +124,21 @@ def field(text, data):
     space.continuous = continuous
     space.source = source
     space.text = text
+    space.names = {}
     real = np.float64 if data.dtype is tack.f64 else np.float32
     return td.Field(space, tack.zeros((data.num_cells,), tack.f64 if real is np.float64 else tack.f32))
 
 
-def contour(text, data, value, subdivision=None, **kwargs):
+def contour(text, data, value, subdivision=None, fields=None, units=None, **kwargs):
     """td.contour of the expression, evaluated where the contour reads it. Inputs above
     order 1 subdivide each cell by their largest order (or subdivision), and each crossing
     is the expression's own root along its sub-edge (exact=True, as td.contour's default),
     or with exact=False the crossing of the lattice values. With no Bernstein bound to skip
     cells by, every cell is refined."""
-    f = field(text, data)
-    orders = [getattr(f.space, "order", 1) for f in _fields(text, data)]
+    f = field(text, data, fields, units)
+    with P.bound({**(P._BINDINGS.get() or {}), **f.space.names}):
+        inputs = _fields(f.space.text, data)
+    orders = [getattr(g.space, "order", 1) for g in inputs]
     order = max([1] + [o for o in orders if isinstance(o, int)])
     if subdivision is None and order > 1:
         subdivision = order
@@ -131,3 +152,136 @@ def _fields(text, data):
     c.parse()
     return [c.lookup(n, 0) for n in sorted(c.fields_read)]
 
+
+# --- a bound in each cell ----------------------------------------------------------
+
+_MONOTONE = {"exp": "exp", "tanh": "tanh", "atan": "atan", "sinh": "sinh"}
+
+
+class _Ranges:
+    """Interval arithmetic on the expression: each cell's bound from its fields' Bernstein
+    bounds (value_range), so a subdivided contour skips the cells it cannot cross. Anything
+    without a rule (a derivative, a vector, a division by a field) is unbounded, which only
+    keeps a cell."""
+
+    def __init__(self, data):
+        self.data = data
+        self.bindings = P._BINDINGS.get() or {}
+        self.lines, self.args, self.keys = [], [], {}
+
+    def tmp(self, lo, hi):
+        k = len(self.lines)
+        self.lines.append(f"rl{k} = {lo}")
+        self.lines.append(f"rh{k} = {hi}")
+        return f"rl{k}", f"rh{k}"
+
+    def field(self, name):
+        field = self.bindings.get(name) or (self.data.fields[name] if name in self.data.fields else None)
+        if field is None or P._type(field) != P.S:
+            return None
+        kind = P._kind(field)
+        if kind not in ("basis", "values-cells"):
+            return None
+        if name not in self.keys:
+            self.keys[name] = len(self.args)
+            getter = (lambda d, m, f=field: f) if name in self.bindings else (lambda d, m, n=name: d.fields[n])
+            self.args.append(("field", getter))
+            k = len(self.lines)
+            self.lines.append(f"rl{k}, rh{k} = self.R{self.keys[name]}.value_range(c)")
+            self.keys[(name, "range")] = (f"rl{k}", f"rh{k}")
+        return self.keys[(name, "range")]
+
+    def range(self, node):
+        """(lo, hi) codes, or None for unbounded."""
+        from . import ops as O
+        if isinstance(node, O._Const):
+            v = repr(float(node.value))
+            return v, v
+        if isinstance(node, O._Ref):
+            return self.field(node.name)
+        if isinstance(node, O._Name) and node.name == "pi":
+            return "3.141592653589793", "3.141592653589793"
+        if isinstance(node, O._Unary):
+            r = self.range(node.a)
+            return None if r is None else self.tmp(f"-{r[1]}", f"-{r[0]}")
+        if isinstance(node, O._Binary):
+            return self.binary(node)
+        if isinstance(node, O._Call):
+            return self.call(node)
+        return None
+
+    def binary(self, node):
+        op = node.op
+        if op in ("<", "<=", ">", ">=", "==", "!=", "and", "or"):
+            return "0.0", "1.0"
+        a, b = self.range(node.a), self.range(node.b)
+        if a is None or b is None:
+            return None
+        (al, ah), (bl, bh) = a, b
+        if op == "+":
+            return self.tmp(f"{al} + {bl}", f"{ah} + {bh}")
+        if op == "-":
+            return self.tmp(f"{al} - {bh}", f"{ah} - {bl}")
+        if op == "*":
+            p = [f"{x} * {y}" for x in (al, ah) for y in (bl, bh)]
+            return self.tmp(f"min({p[0]}, {p[1]}, {p[2]}, {p[3]})", f"max({p[0]}, {p[1]}, {p[2]}, {p[3]})")
+        from . import ops as O
+        if op == "/" and isinstance(node.b, O._Const) and node.b.value != 0.0:
+            s = repr(1.0 / float(node.b.value))
+            return self.tmp(f"min({al} * {s}, {ah} * {s})", f"max({al} * {s}, {ah} * {s})")
+        if op == "^" and isinstance(node.b, O._Const) and float(node.b.value).is_integer() and node.b.value > 0:
+            n = int(node.b.value)
+            if n % 2:
+                return self.tmp(f"{al} ** {n}.0", f"{ah} ** {n}.0")
+            lo, hi = self.absolute(al, ah)
+            return self.tmp(f"{lo} ** {n}.0", f"{hi} ** {n}.0")
+        return None
+
+    def absolute(self, lo, hi):
+        return self.tmp(f"tack.select({lo} >= 0.0, {lo}, tack.select({hi} <= 0.0, -{hi}, 0.0))",
+                        f"max(-{lo}, {hi})")
+
+    def call(self, node):
+        fn, args = node.name, node.args
+        if fn in ("sin", "cos"):
+            return "-1.0", "1.0"
+        ranges = [self.range(a) for a in args]
+        if any(r is None for r in ranges) or not ranges:
+            return None
+        (lo, hi) = ranges[0]
+        if fn in _MONOTONE and len(ranges) == 1:
+            f = _MONOTONE[fn]
+            return self.tmp(f"{f}({lo})", f"{f}({hi})")
+        if fn == "sqrt":
+            return self.tmp(f"sqrt(max({lo}, 0.0))", f"sqrt(max({hi}, 0.0))")
+        if fn in ("ln", "log"):
+            return self.tmp(f"tack.select({lo} > 0.0, log(max({lo}, 1.0e-30)), -3.0e38)",
+                            f"tack.select({hi} > 0.0, log(max({hi}, 1.0e-30)), -3.0e38)")
+        if fn == "abs":
+            return self.absolute(lo, hi)
+        if fn in ("min", "max") and len(ranges) == 2:
+            (bl, bh) = ranges[1]
+            return self.tmp(f"{fn}({lo}, {bl})", f"{fn}({hi}, {bh})")
+        if fn == "clamp" and len(ranges) == 3:
+            (xl, xh), (cl, ch) = ranges[1], ranges[2]
+            return self.tmp(f"min(max({xl}, {lo}), {ch})", f"min(max({xh}, {lo}), {ch})")
+        if fn == "if" and len(ranges) == 3:
+            (al, ah), (bl, bh) = ranges[1], ranges[2]
+            return self.tmp(f"min({al}, {bl})", f"max({ah}, {bh})")
+        return None
+
+
+def _ranges(text, data):
+    """(the value_range method's source, its field arguments) for the expression, or None."""
+    from . import _front
+    try:
+        tree = _front.parse(text)
+    except P.ExprError:
+        return None
+    r = _Ranges(data)
+    bound = r.range(tree)
+    if bound is None:
+        return None
+    lo, hi = bound
+    body = [*r.lines, f"return {lo}, {hi}"]
+    return "\n    @tack.func\n    def value_range(self, c):\n" + "".join(f"        {b}\n" for b in body), r.args

@@ -54,13 +54,14 @@ from .parser import (
     clear_cache,
     compile_expression,
     evaluate,
+    evaluate_complex,
     for_each,
     function,
 )
 
 __all__ = ["Compiled", "Entry", "Expr", "ExprError", "FieldDictionary", "Function", "arg",
            "cells", "cgns", "clamp", "clear_cache", "compile_expression", "compile_many", "conj", "contour",
-           "coords", "cross", "curl", "ddot", "det", "dev", "div", "dot", "eigvals", "evaluate", "field", "for_each", "fsum", "function",
+           "coords", "cross", "curl", "ddot", "det", "dev", "div", "dot", "eigvals", "evaluate", "evaluate_complex", "field", "for_each", "fsum", "function",
            "grad", "identity", "imag", "inv", "laplacian", "mag", "mag2", "maximum", "minimum", "neighbor", "norm", "outer", "owner",
            "phase", "pi", "points", "qcrit", "real", "ref", "skew", "sym", "trace",
            "transpose", "vec", "vonmises", "where"]

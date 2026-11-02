@@ -471,6 +471,18 @@ class _Compiler:
         ]
         return self.load(f"fsum:{name}", f"fs{k}", S)
 
+    def tensor_gradients(self, name, pos, getter=None):
+        """The world gradients of a tensor field's nine entries, row by row, as codes."""
+        getter = getter or self.by_name(name)
+        parts = self.once(f"tensor-components:{name}", lambda d, m, g=getter: _tensor_components(g(d, m)))
+        pc = self.pc(pos)
+        self.uses_world_gradient = True
+        out = []
+        for k in range(9):
+            u = self.arg("field", f"{name}#t{k}", lambda d, m, k=k: parts(d, m)[k])
+            out.append(self.load(f"grad:{name}#t{k}", f"_world_gradient(dom, {u}, c, {pc})", V)[0])
+        return out
+
     def gradient(self, fn, name, pos, field=None, getter=None):
         """grad(u) of a scalar; div, curl, qcrit of a vector, from its components' gradients."""
         if self.mode not in ("cells", "nodes"):
@@ -502,7 +514,12 @@ class _Compiler:
         pc = self.pc(pos)
         self.uses_world_gradient = True
         if _type(field) == M:
-            self.error(f"{fn}() of a tensor field is not implemented; take it of each component", pos)
+            if fn != "div":
+                self.error(f"{fn}() of a tensor field is not implemented; div() is, and grad() of each "
+                           "entry", pos)
+            g = self.tensor_gradients(name, pos, getter)
+            rows = [" + ".join(f"{g[3 * i + j]}[{j}]" for j in range(3)) for i in range(3)]
+            return self.load(f"div:{name}", f"tack.vec3({', '.join(rows)})", V)
         if fn == "grad" and not _is_vector(field):
             u = self.arg("field", name, getter)
             return self.load(f"grad:{name}", f"_world_gradient(dom, {u}, c, {pc})", V)
@@ -647,6 +664,11 @@ class _Compiler:
             if t not in (S, V):
                 self.error("grad() takes a scalar or vector expression", pos)
             return ((d or ZERO_V), V) if t == S else ((d or ZERO_M), M)
+        if fn == "div" and t == M:
+            if not d:
+                return ZERO_V, V
+            rows = [" + ".join(f"{d[m]}[{i}, {m}]" for m in range(3)) for i in range(3)]
+            return self.emit(f"tack.vec3({', '.join(rows)})", V)
         if t != V:
             self.error(f"{fn}() takes a vector expression", pos)
         J = d or ZERO_M
@@ -858,6 +880,22 @@ def _components(field):
     for k in range(3):
         part = tack.empty((field.space.size,), tack.arrays.dtype_of(values))
         component(values, k, part, field.space.size)
+        parts.append(td.Field(field.space, part))
+    return parts
+
+
+def _tensor_components(field):
+    """A tensor field's nine entries, row by row, as scalar fields in its space, copied now."""
+    values = materialize(field.values)
+    scalar = values.scalar_dtype
+    flat = np.asarray(values.numpy(), dtype=np.float64).reshape(field.space.size, -1)
+    if flat.shape[1] == 6:   # symmetric: XX YY ZZ XY YZ XZ
+        xx, yy, zz, xy, yz, xz = flat.T
+        flat = np.stack([xx, xy, xz, xy, yy, yz, xz, yz, zz], axis=1)
+    parts = []
+    for k in range(9):
+        part = tack.empty((field.space.size,), scalar)
+        tack.copyto(part, np.ascontiguousarray(flat[:, k]))
         parts.append(td.Field(field.space, part))
     return parts
 
@@ -1193,10 +1231,15 @@ def compile_expression(text, data, at="cells", replace_invalid=None, fields=None
     may use and the units of fields that have none of their own (Field.unit). Units are
     checked and converted where they meet, and with units ("kPa") the result is given in
     them. compiled.unit is the result's unit, None when unknown."""
-    from ._front import needs_front
+    from ._front import expands, needs_front
     if needs_front(text, fields, units, data):
         return _prepared([text], data, at, replace_invalid, None, fields, units)
-    return _compile([text], data, at, replace_invalid, None)
+    try:
+        return _compile([text], data, at, replace_invalid, None)
+    except ExprError:
+        if expands(text, data):   # derivatives of tensors, written out by component
+            return _prepared([text], data, at, replace_invalid, None, fields, units)
+        raise
 
 
 def compile_many(expressions, data, at="cells", replace_invalid=None, fields=None, units=None):
@@ -1210,7 +1253,12 @@ def compile_many(expressions, data, at="cells", replace_invalid=None, fields=Non
     sources = [expressions[n] for n in names]
     if any(needs_front(s, fields, units, data) for s in sources):
         return _prepared(sources, data, at, replace_invalid, names, fields, units)
-    return _compile(sources, data, at, replace_invalid, names)
+    try:
+        return _compile(sources, data, at, replace_invalid, names)
+    except ExprError:
+        if any(expands(s, data) for s in sources):
+            return _prepared(sources, data, at, replace_invalid, names, fields, units)
+        raise
 
 
 def _exchangeable(field):
@@ -1266,6 +1314,21 @@ def evaluate(text, data, at="cells", replace_invalid=None, name=None, update_gho
     if name is not None:
         data.fields[name] = field
     return field
+
+
+def evaluate_complex(source, data, at="cells", replace_invalid=None, fields=None, units=None, project=False):
+    """The real and imaginary parts of a complex expression, (real, imag) td.Fields, from one
+    kernel. source is text or an operator expression; the other arguments are evaluate's."""
+    if isinstance(source, str):
+        parts = {"real": f"real({source})", "imag": f"imag({source})"}
+    else:
+        from . import ops
+        parts = {"real": ops._Call("real", source), "imag": ops._Call("imag", source)}
+    staging = td.L2(data, order=max(at.order, 1)) if project and isinstance(at, td.H1) else at
+    out = compile_many(parts, data, staging, replace_invalid, fields, units)(data)
+    if staging is not at:
+        out = {k: td.project(data, f, at) for k, f in out.items()}
+    return out["real"], out["imag"]
 
 
 # --- expressions inside other kernels -------------------------------------

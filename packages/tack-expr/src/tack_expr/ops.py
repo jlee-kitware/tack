@@ -155,6 +155,10 @@ class Expr:
         with P.bound(names):
             return P.evaluate(text, data, at=at, replace_invalid=replace_invalid, name=name, project=project)
 
+    def eval_complex(self, data, at="cells", replace_invalid=None, fields=None, units=None, project=False):
+        """The real and imaginary parts of a complex expression, (real, imag) td.Fields, from one kernel."""
+        return P.evaluate_complex(self, data, at, replace_invalid, fields, units, project)
+
     def compile(self, data, at="cells", replace_invalid=None, fields=None, units=None):
         """A Compiled kernel, called as ``compiled(data)`` as often as the values change."""
         text, names, unit = self._prepare(data, fields, units)
@@ -164,10 +168,12 @@ class Expr:
         return compiled
 
     def field(self, data, fields=None, units=None):
-        """A td.Field computed wherever an algorithm reads it, stored nowhere."""
-        text, names, _ = self._prepare(data, fields, units)
+        """A td.Field computed wherever an algorithm reads it, stored nowhere; its unit the
+        expression's."""
+        text, names, unit = self._prepare(data, fields, units)
         with P.bound(names):
-            return lazy.field(text, data)
+            f = lazy.field(text, data)
+        return td.Field(f.space, f.values, unit) if unit is not None else f
 
     def contour(self, data, value, fields=None, units=None, **kwargs):
         text, names, _ = self._prepare(data, fields, units)
@@ -430,9 +436,14 @@ _UFUNCS = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/", "true_di
 _BINARY_UFUNCS = {"+", "-", "*", "/", "^", "%", "<", "<=", ">", ">="}
 
 
-def compile_many(expressions, data, at="cells", replace_invalid=None):
+def compile_many(expressions, data, at="cells", replace_invalid=None, fields=None, units=None):
     """tack_expr.compile_many of a mapping of names to expressions or calculator text, sharing
-    the bound fields' names."""
+    the bound fields' names. fields and units: as tack_expr.compile_many's."""
+    from . import _front
+    trees = {key: _wrap(e) if not isinstance(e, str) else e for key, e in expressions.items()}
+    if fields is not None or units is not None or any(
+            not isinstance(e, str) and _front.needs_tree(e) for e in trees.values()):
+        return P.compile_many(trees, data, at, replace_invalid, fields, units)
     texts, names = {}, {}
     for key, e in expressions.items():
         if isinstance(e, str):

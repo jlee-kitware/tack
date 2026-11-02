@@ -162,3 +162,41 @@ def test_complex_results_and_units(data):
     assert_close(got.values.numpy(), values("sqrt(u_real^2 + u_imag^2)", data) * 1e-3)
     u = data.fields["u_real"] + 1j * data.fields["u_imag"]
     assert_close(fx.phase(u, 0.5).eval(data).values.numpy(), values("u_real * cos(0.5) - u_imag * sin(0.5)", data))
+
+
+def test_units_on_every_entry_point(data):
+    p, q = values("p", data, at="points"), values("q", data, at="points")
+    lazy = fx.field("p * 2", data, fields={"p": "kPa"}, units="Pa")
+    assert lazy.unit == "Pa"
+    data.fields["e"] = lazy
+    sampled = td.probe(data, td.uniform_grid((3, 3, 3), origin=(0.4, 0.5, 0.5), spacing=(0.1, 0.1, 0.1)),
+                       fields=["e"])
+    assert sampled.fields["e"].unit == "Pa"
+    got = sampled.fields["e"].values.numpy()
+    ref = td.probe(data, td.uniform_grid((3, 3, 3), origin=(0.4, 0.5, 0.5), spacing=(0.1, 0.1, 0.1)),
+                   fields=["p"]).fields["p"].values.numpy() * 2000.0
+    assert_close(got, ref)
+    surface = fx.contour("p", data, 900.0, fields={"p": "kPa"}, units="Pa")
+    plain = td.contour(data, "p", 0.9)
+    assert surface.num_cells == plain.num_cells
+    many = fx.compile_many({"a": data.fields["p"] * 2, "b": "q + p"}, data, at="points",
+                           fields={"p": "kPa", "q": "Pa"}, units={"a": "Pa"})
+    out = many(data)
+    assert_close(out["a"].values.numpy(), p * 2000.0)
+    assert_close(out["b"].values.numpy(), q + p * 1e3)   # in the first known unit, q's
+    assert out["a"].unit == "Pa" and out["b"].unit == "Pa"
+
+
+def test_complex_results_as_two_fields(data):
+    re, im = fx.evaluate_complex("u * (1 + 2j)", data)
+    assert_close(re.values.numpy(), values("u_real - 2 * u_imag", data))
+    assert_close(im.values.numpy(), values("2 * u_real + u_imag", data))
+    re, im = fx.evaluate_complex("u", data, at="points", fields={"u": "mm"}, units="m")
+    assert re.unit == "m" and im.unit == "m"
+    assert_close(im.values.numpy(), values("u_imag", data, at="points") * 1e-3)
+    u = data.fields["u_real"] + 1j * data.fields["u_imag"]
+    re, im = (u * u).eval_complex(data)
+    assert_close(re.values.numpy(), values("u_real^2 - u_imag^2", data))
+    assert_close(im.values.numpy(), values("2 * u_real * u_imag", data))
+    re, im = fx.evaluate_complex("grad(u)", data)
+    assert_close(re.values.numpy(), values("grad(u_real)", data))
