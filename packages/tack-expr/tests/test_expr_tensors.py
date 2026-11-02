@@ -104,8 +104,50 @@ def test_tensors_with_the_operators_and_units(data):
     ("U / A", "only by a scalar"),
     ("trace(U)", "takes"),
     ("grad(A)", "not implemented"),
-    ("div(outer(U, U))", "not implemented"),
+    ("curl(A)", "not implemented"),
 ])
 def test_tensor_errors(data, text, message):
     with pytest.raises(fx.ExprError, match=message):
         fx.evaluate(text, data)
+
+
+@tack.func
+def f_stress(x):
+    return tack.mat3(x[0] * x[0], x[0] * x[1], 0.0,
+                     x[0] * x[1], x[1] * x[1] + x[2], x[2],
+                     0.0, x[2], x[0] * x[2])
+
+
+@pytest.fixture
+def stressed(data):
+    h2 = td.H1(data, order=2)
+    data.fields["T"] = td.interpolate(data, f_stress, h2, dtype=tack.mat3())
+    t = data.fields["T"].values.numpy()
+    six = tack.empty((h2.size,), tack.vec(6, data.dtype))
+    tack.copyto(six, np.stack([t[:, 0, 0], t[:, 1, 1], t[:, 2, 2], t[:, 0, 1], t[:, 1, 2], t[:, 0, 2]], axis=1))
+    data.fields["T6"] = td.Field(h2, six)
+    return data
+
+
+def test_divergence_of_a_tensor_field(stressed):
+    x = values("coords", stressed)
+    want = np.stack([3 * x[:, 0], 3 * x[:, 1] + 1, x[:, 0]], axis=1)
+    for text in ("div(T)", "div(T6)", "div(2 * T) / 2", "div(T + transpose(T)) / 2", "div(sym(T6))"):
+        assert_close(values(text, stressed), want, tol=1e-3)
+    assert_close(values("div(T) - div(T6)", stressed), 0 * want, tol=1e-3)
+
+
+def test_derivatives_of_tensor_expressions(data):
+    x = values("coords", data)
+    U = np.stack([x[:, 1] * x[:, 2] + 1, x[:, 0] ** 2 - x[:, 2], 2 * x[:, 0] * x[:, 1]], axis=1)
+    J = np.zeros((len(x), 3, 3))
+    J[:, 0, 1], J[:, 0, 2] = x[:, 2], x[:, 1]
+    J[:, 1, 0], J[:, 1, 2] = 2 * x[:, 0], -1.0
+    J[:, 2, 0], J[:, 2, 1] = 2 * x[:, 1], 2 * x[:, 0]
+    const = np.broadcast_to([0.0, 1.0, 0.0], x.shape)
+    assert_close(values("div(sym(grad(U)))", data), const, tol=1e-3)
+    assert_close(values("laplacian(U)", data), 2 * const, tol=1e-3)
+    assert_close(values("div(outer(U, U))", data), np.einsum("nij,nj->ni", J, U), tol=1e-3)
+    lame = "div(0.5 * div(U) * identity + 2 * sym(grad(U)))"
+    assert_close(values(lame, data), 2 * const, tol=1e-3)
+    assert_close((fx.div(fx.sym(fx.grad(data.fields["U"])))).eval(data).values.numpy(), const, tol=1e-3)

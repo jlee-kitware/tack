@@ -322,6 +322,9 @@ class _Binder(_Pass):
             return self.ref(node.name, node)
         if isinstance(node, O._Field):
             unit = getattr(node.field, "unit", None)
+            if unit is None and self.data is not None:   # a stored field: the dictionary's unit for its name
+                stored = [n for n, f in self.data.fields.entries() if f is node.field]
+                unit = self.unit_of_stored(stored[0]) if len(stored) == 1 else None
             if unit is not None and getattr(node, "unit", None) is None:
                 node.unit = unit
             return node
@@ -476,6 +479,181 @@ class _Lowering(_Pass):
             return (O._Call("if", c, ar, br),
                     O._Call("if", c, ai if ai is not None else _zero_like(ar), bi if bi is not None else _zero_like(br)))
         raise self.failure(f"{fn}() takes real values; take real(), imag(), abs() or phase(z, angle) first", node)
+
+
+# --- tensors, component by component ---------------------------------------------
+
+def _sum(terms):
+    out = terms[0]
+    for t in terms[1:]:
+        out = O._Binary("+", out, t)
+    return out
+
+
+class _Tensors(_Pass):
+    """Derivatives of tensors written out component by component: div() of a tensor is the
+    vector of sums of its entries' gradients, laplacian() of a vector the vector of its
+    components' Laplacians, so the derivative compilers see scalars and vectors only."""
+
+    def __init__(self, text, data):
+        super().__init__(text)
+        self.data = data
+        self.bindings = P._BINDINGS.get() or {}
+        self.changed = False
+
+    def field_of(self, node):
+        if isinstance(node, O._Field):
+            return node.field
+        name = node.name
+        if name in self.bindings:
+            return self.bindings[name]
+        if self.data is not None and name in self.data.fields:
+            return self.data.fields[name]
+        return None
+
+    def shape(self, node):
+        if isinstance(node, (O._Field, O._Ref)):
+            field = self.field_of(node)
+            return P._type(field) if field is not None else P.S
+        if isinstance(node, O._Name):
+            return {"coords": P.V, "iHat": P.V, "jHat": P.V, "kHat": P.V, "identity": P.M}.get(node.name, P.S)
+        if isinstance(node, (O._Const, _Quantity)):
+            return P.S
+        if isinstance(node, (O._Unary, _Declared)):
+            return self.shape(node.a)
+        if isinstance(node, O._Index):
+            return {P.M: P.V, P.V: P.S}.get(self.shape(node.a), P.S)
+        if isinstance(node, O._Vector):
+            return P.M if all(self.shape(p) == P.V for p in node.parts) else P.V
+        if isinstance(node, O._Binary):
+            if node.op not in ("+", "-", "*", "/", "%"):
+                return P.S
+            shapes = {self.shape(node.a), self.shape(node.b)}
+            return P.M if P.M in shapes else P.V if P.V in shapes else P.S
+        if isinstance(node, O._Call):
+            fn, args = node.name, node.args
+            first = self.shape(args[0]) if args else P.S
+            if fn == "grad":
+                return P.V if first == P.S else P.M
+            if fn == "div":
+                return P.S if first == P.V else P.V
+            if fn in ("curl", "norm", "cross", "eigvals"):
+                return P.V
+            if fn in ("outer", "transpose", "inv", "sym", "skew", "dev"):
+                return P.M
+            if fn in ("laplacian", "points", "cells", "owner", "neighbor"):
+                return first
+            if fn == "dot" and len(args) == 2:
+                a, b = first, self.shape(args[1])
+                return P.M if (a, b) == (P.M, P.M) else P.V if P.M in (a, b) else P.S
+            if fn == "if" and len(args) == 3:
+                return self.shape(args[1])
+            return P.S
+        return P.S
+
+    def scaled(self, node, scalar, part, op):
+        return O._Binary(op, scalar, part) if op == "*" and scalar is not None else O._Binary(op, part, scalar)
+
+    def comp(self, node, i, j):
+        """Entry (i, j) of a tensor-valued node, as a scalar node."""
+        if isinstance(node, O._Name) and node.name == "identity":
+            return O._Const(1.0 if i == j else 0.0)
+        if isinstance(node, O._Vector):
+            return self.vcomp(node.parts[i], j)
+        if isinstance(node, O._Unary):
+            return O._Unary("-", self.comp(node.a, i, j))
+        if isinstance(node, _Declared):
+            return _Declared(self.comp(node.a, i, j), node.unit)
+        if isinstance(node, O._Binary) and node.op in ("+", "-"):
+            return O._Binary(node.op, self.comp(node.a, i, j), self.comp(node.b, i, j))
+        if isinstance(node, O._Binary) and node.op in ("*", "/"):
+            if self.shape(node.a) == P.S and node.op == "*":
+                return O._Binary("*", node.a, self.comp(node.b, i, j))
+            if self.shape(node.b) == P.S:
+                return O._Binary(node.op, self.comp(node.a, i, j), node.b)
+        if isinstance(node, O._Call):
+            fn, args = node.name, node.args
+            if fn == "grad":
+                return O._Index(O._Call("grad", self.vcomp(args[0], i)), j)
+            if fn == "outer":
+                return O._Binary("*", self.vcomp(args[0], i), self.vcomp(args[1], j))
+            if fn == "transpose":
+                return self.comp(args[0], j, i)
+            if fn in ("sym", "skew"):
+                return O._Binary("*", O._Const(0.5), O._Binary("+" if fn == "sym" else "-",
+                                                                self.comp(args[0], i, j), self.comp(args[0], j, i)))
+            if fn == "dev":
+                entry = self.comp(args[0], i, j)
+                if i != j:
+                    return entry
+                trace = _sum([self.comp(args[0], k, k) for k in range(3)])
+                return O._Binary("-", entry, O._Binary("/", trace, O._Const(3.0)))
+            if fn == "dot" and len(args) == 2:
+                return _sum([O._Binary("*", self.comp(args[0], i, k), self.comp(args[1], k, j)) for k in range(3)])
+            if fn == "if" and len(args) == 3:
+                return O._Call("if", args[0], self.comp(args[1], i, j), self.comp(args[2], i, j))
+        return O._Index(O._Index(node, i), j)
+
+    def vcomp(self, node, k):
+        """Component k of a vector-valued node, as a scalar node."""
+        if isinstance(node, O._Name) and node.name in ("iHat", "jHat", "kHat"):
+            return O._Const(1.0 if "ijk".index(node.name[0]) == k else 0.0)
+        if isinstance(node, O._Vector):
+            return node.parts[k]
+        if isinstance(node, O._Unary):
+            return O._Unary("-", self.vcomp(node.a, k))
+        if isinstance(node, _Declared):
+            return _Declared(self.vcomp(node.a, k), node.unit)
+        if isinstance(node, O._Index) and self.shape(node.a) == P.M:
+            return self.comp(node.a, node.k, k)
+        if isinstance(node, O._Binary) and node.op in ("+", "-", "*", "/"):
+            a = node.a if self.shape(node.a) == P.S else self.vcomp(node.a, k)
+            b = node.b if self.shape(node.b) == P.S else self.vcomp(node.b, k)
+            return O._Binary(node.op, a, b)
+        if isinstance(node, O._Call):
+            fn, args = node.name, node.args
+            if fn == "dot" and len(args) == 2:
+                sa, sb = self.shape(args[0]), self.shape(args[1])
+                if sa == P.M and sb == P.V:
+                    return _sum([O._Binary("*", self.comp(args[0], k, j), self.vcomp(args[1], j)) for j in range(3)])
+                if sa == P.V and sb == P.M:
+                    return _sum([O._Binary("*", self.vcomp(args[0], j), self.comp(args[1], j, k)) for j in range(3)])
+            if fn == "cross" and len(args) == 2:
+                a, b = (k + 1) % 3, (k + 2) % 3
+                return O._Binary("-", O._Binary("*", self.vcomp(args[0], a), self.vcomp(args[1], b)),
+                                 O._Binary("*", self.vcomp(args[0], b), self.vcomp(args[1], a)))
+            if fn == "div" and len(args) == 1 and self.shape(args[0]) == P.M:
+                return self.divergence_row(args[0], k)
+            if fn == "if" and len(args) == 3:
+                return O._Call("if", args[0], self.vcomp(args[1], k), self.vcomp(args[2], k))
+        return O._Index(node, k)
+
+    def divergence_row(self, node, i):
+        return _sum([O._Index(O._Call("grad", self.comp(node, i, j)), j) for j in range(3)])
+
+    def expand(self, node):
+        node = _like(node, *(self.expand(c) for c in _children(node)))
+        if isinstance(node, O._Call) and len(node.args) == 1:
+            arg = node.args[0]
+            if node.name == "div" and self.shape(arg) == P.M:
+                self.changed = True
+                return _at(O._Vector(*(self.divergence_row(arg, i) for i in range(3))), getattr(node, "pos", 0))
+            if node.name == "laplacian" and self.shape(arg) == P.V:
+                self.changed = True
+                return _at(O._Vector(*(O._Call("laplacian", self.vcomp(arg, i)) for i in range(3))),
+                           getattr(node, "pos", 0))
+        return node
+
+
+def expands(source, data):
+    """Whether the expression takes derivatives of tensors, written out by component here."""
+    try:
+        tree = parse(source) if isinstance(source, str) else source
+    except P.ExprError:
+        return False
+    tensors = _Tensors("", data)
+    tensors.expand(tree)
+    return tensors.changed
 
 
 # --- units ------------------------------------------------------------------------
@@ -699,6 +877,7 @@ def prepare(source, data, fields=None, units=None, names=None):
     tree, imaginary = _Lowering(text).lower(tree)
     if imaginary is not None:
         raise P.ExprError("the result is complex: take real(), imag(), abs(), arg() or phase(z, angle)", 0, text)
+    tree = _Tensors(text, data).expand(tree)
     unit = None
     if units is not None or _known_units(tree):
         length = getattr(data, "unit", None)

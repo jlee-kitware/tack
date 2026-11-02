@@ -146,7 +146,13 @@ class Derivative:
         value, t = p.field(name, pos)
         kind = P._kind(field)
         if t == P.M:
-            self.error("derivatives of tensor fields inside an expression are not implemented", pos)
+            # A tensor's derivative is three matrices, one per direction: slice m holds d/dx_m of
+            # each entry. Only indexing and div() take it; the front end writes the rest out by entry.
+            if kind != "basis" or isinstance(field.space, P.td.Constant):
+                return value, t, None
+            g = p.tensor_gradients(name, pos)
+            return value, t, tuple(self.d("tack.mat3(" + ", ".join(f"{g[k]}[{m}]" for k in range(9)) + ")")
+                                   for m in range(3))
         if kind in ("hdiv", "hcurl"):
             self.error(f"derivatives of {type(field.space).__name__} fields inside an expression "
                        "are not implemented", pos)
@@ -205,6 +211,8 @@ class Derivative:
         c = [x for x, _, _ in a]
         t = [x for _, x, _ in a]
         g = [x for _, _, x in a]
+        if any(isinstance(x, tuple) for x in g):
+            self.error(f"{fn}() of a tensor inside a derivative is not implemented; index the tensor", pos)
 
         def check(*want):
             if len(a) != len(want):
@@ -335,14 +343,23 @@ class Derivative:
         if op == "[":
             idx, _, _ = self.expr(0)
             self.expect("]")
-            self.need(left[1], V, pos)
             k = self.p.const_value(idx)
             if k not in (0.0, 1.0, 2.0):
-                self.error("a vector index must be 0, 1 or 2", pos)
+                self.error("an index must be 0, 1 or 2", pos)
+            if left[1] == P.M:
+                a, D, k = left[0], left[2], int(k)
+                row = self.emit(f"tack.vec3({a}[{k}, 0], {a}[{k}, 1], {a}[{k}, 2])", V)
+                if not D:
+                    return row, V, None
+                rows = ", ".join(f"tack.vec3({Dm}[{k}, 0], {Dm}[{k}, 1], {Dm}[{k}, 2])" for Dm in D)
+                return row, V, self.d(f"tack.mat3({rows}).transpose()")
+            self.need(left[1], V, pos)
             J = left[2]
             return self.emit(f"{left[0]}[{int(k)}]", S), S, (self.d(f"ad.row({J}, {int(k)})") if J else None)
         (a, ta, da) = left
         (b, tb, db) = self.expr(bp - 1 if right_assoc else bp)
+        if isinstance(da, tuple) or isinstance(db, tuple):
+            self.error("a tensor inside a derivative is read entry by entry: index it, or take div() of it", pos)
         if op in ("+", "-"):
             t = V if V in (ta, tb) else S
             v = self.emit(f"{a} {op} {b}", t)

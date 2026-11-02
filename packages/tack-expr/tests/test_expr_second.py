@@ -111,8 +111,8 @@ def test_float64(f64_backend):
     assert_close_to_largest(values("grad(grad(u)[0])", data), grad_x(u)(x), 1e-6)
 
 
-@pytest.mark.parametrize("expr", ["grad(laplacian(u))", "laplacian(qcrit(U))", "laplacian(U)"])
-def test_third_derivatives_and_vector_laplacians_are_refused(data, expr):
+@pytest.mark.parametrize("expr", ["grad(laplacian(u))", "laplacian(qcrit(U))"])
+def test_third_derivatives_are_refused(data, expr):
     with pytest.raises(fx.ExprError):
         fx.compile_expression(expr, data)
 
