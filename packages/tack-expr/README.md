@@ -127,7 +127,9 @@ basis. A solver that reconstructs its own gradient passes it as a field, `td.Fie
 gradient=g)`, and `world_gradient`, `td.gradients`, `td.flow_quantities` and every expression's
 `grad`, `div`, `curl` and `qcrit` read it; tack-lbm gives velocity its central-difference Jacobian
 this way. An expression field's view gives the expression's gradient and Hessian by the chain rule,
-so Tack's filters and kernels differentiate it as they do a stored field.
+so Tack's filters and kernels differentiate it as they do a stored field. It compiles them only when
+something asks: `td.gradients` asks, and a kernel of your own takes `td.differentiable(field,
+order)`, or `fx.field(text, data, derivatives=1)` (2 for the Hessian too).
 
 An expression stored under a name in `data.fields` is read by name in other expressions, expanded
 into the same kernel and bound late, so it follows its inputs; one defined in terms of itself is
@@ -504,9 +506,6 @@ ms on the same grid, against 0.39 ms for `td.project` and a second kernel.
   but a product of them is refused, as elsewhere in Tack.
 - **Bounds cover the common operations.** A subdivided contour of an expression with a derivative,
   or a function with no interval rule, refines every cell.
-- **Compile time of expression fields.** A kernel that takes an expression field compiles its
-  gradient and Hessian methods too: a contour of an order-2 expression compiles about 40% longer
-  than without them.
 - **Ghost exchange across MPI ranks is untested here.** `update_ghosts=True` uses Tack's exchange,
   tested in one process; `mpi4py` is not installed on the Spark.
 - **Host overhead per call.** About 65 microseconds per launch goes to `td.for_each`'s setup;
@@ -527,7 +526,7 @@ merged:
 | #258 `fix/vtk-char-signedness` | VTK interop reads a `vtkCharArray` as signed or unsigned by its range |
 | #259 `vis/world-hessian` | `shape_hessian`, `parametric_hessian` and `geometry_curvature`; public `world_gradient`, `world_hessian` and `world_jet` |
 | #260 `vis/hdiv-hcurl` | the `HDiv` and `HCurl` spaces |
-| `vis/field-derivatives`, not yet proposed | `Field(..., gradient=)`; `world_gradient` and `world_jet` from the field's view; `register_field_resolver`; filters carrying given gradients and making evaluated fields again; `dataset_to_vtk` of evaluated fields; a space's `default_subdivision` |
+| `vis/field-derivatives`, not yet proposed | `Field(..., gradient=)`; `world_gradient` and `world_jet` from the field's view; `register_field_resolver`; `differentiable`; filters carrying given gradients and making evaluated fields again; `dataset_to_vtk` of evaluated fields; a space's `default_subdivision` |
 | `packages/tack-expr` on `field-expression-support` | the compiler, derivatives (of tensors too), `compile_many`, expression fields with bounds and their contours, ghost refresh, the Python operators, units on every entry point, the field dictionary, tensors and complex values (a complex result as two fields); tests, examples and this document. The contour hook for evaluated and continuous spaces is here too, not yet proposed. |
 
 The next steps:
