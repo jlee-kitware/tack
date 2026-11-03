@@ -7,6 +7,10 @@
 - A space evaluated where it is read may give `default_subdivision`, the lattice
   steps contour, clip and threshold cut its cells into by default.
 
+- `differentiable(field, order=1)`: a field with its world derivatives in its view.
+  A field evaluated where it is read compiles them only when asked; `gradients`
+  asks, and a kernel of your own takes `differentiable(field)`.
+
 ### Changed
 
 - Filters carry a field's given gradient with it, and make a field evaluated where
