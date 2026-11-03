@@ -26,7 +26,7 @@ within 5% of a hand-written kernel, on point, cell, face and higher-order finite
   Jacobian, so it is exact for fields of any order and for curved cells.
 - **Small and native.** The compiler is about 4,400 lines of Python in its own package, `tack-expr`.
   The generated kernel is ordinary Tack source run by `td.for_each` on any Tack backend. Everything
-  except the vector spaces and contours of expressions runs on Tack as it is.
+  except contours of expressions runs on Tack's main as it is.
 - **Few recompiles.** Constants are kernel arguments. Editing `2.5` to `7.0` reuses the compiled
   kernel.
 
@@ -86,22 +86,21 @@ analysis, at SC26 and after, this is the most visible value.
 a few percent of hand-written code and three times faster than one kernel per operation; four
 derived fields cost a lattice Boltzmann solver about 0.2% of its run.
 
-**Pieces worth having in Tack on their own.** `HDiv` and `HCurl`, the public `world_gradient`,
-`world_hessian` and `world_jet`, and contouring fields evaluated on demand are useful to any
-`tack.dataset` user, with or without expressions.
+**Pieces now in Tack.** `HDiv` and `HCurl`, the public `world_gradient`, `world_hessian` and
+`world_jet`, and the code generator's linear-time typing came out of this work and are in Tack's
+main, useful to any `tack.dataset` user with or without expressions.
 
 **What it costs.** `tack-expr` is a second compiler, about 4,400 lines plus tests, that generates
 code against `tack.dataset`'s views; changes to those views would reach it. Its language is
 deliberately small, with no loops, statements or user functions. A kernel with second derivatives
 compiles once, in 0.6 s at order 3 and up to about 5 s for large expressions.
 
-**Packaging.** `tack-expr` is a package of its own and runs on Tack as it is, with two exceptions
-that need the Tack branch: the vector spaces, and contours of expressions (shared points for
-continuous expressions, and subdivision for higher orders), which rest on about ten lines in
-`contour` and `subdivide`. Everything else on the branch is additive. So it can ship separately
-unless Tack wants it in core, and the question for Tack's maintainers is how far Tack means to reach
-toward end users: as a developer toolkit, expressions are a convenience; under ParaView-style tools,
-Catalyst and agents, they are a core layer.
+**Packaging.** `tack-expr` is a package of its own and runs on Tack's main, with one exception:
+contours of expressions (shared points for continuous expressions, and subdivision for higher
+orders) rest on about ten lines in `contour` and `subdivide`, which come with tack-expr's pull
+request. So it can ship separately unless Tack wants it in core, and the question for Tack's
+maintainers is how far Tack means to reach toward end users: as a developer toolkit, expressions are
+a convenience; under ParaView-style tools, Catalyst and agents, they are a core layer.
 
 The same compiler takes expressions written with Python operators on `td.Field`s, `(U + V /
 fx.curl(W)).eval(data)`, described under Python operators. Units, the field dictionary and complex
@@ -319,13 +318,15 @@ exactly needs a higher order. A Bernstein target (VTK's Bezier cells) needs the 
 converted to coefficients. A true L2 projection needs a mass-matrix solve and stays with MFEM or a
 separate filter.
 
-**Vector spaces.** The Tack branch adds `HDiv` (Raviart-Thomas) and `HCurl` (Nedelec, first kind):
-at order 1 on hexahedra, voxels and tetrahedra, and of any order on hexahedra and voxels. Above
-order 1 their values on shared faces and edges are kept in the face's or edge's own frame, so cells
-that number their corners differently read them alike; a test on hexahedra numbered from random
-rotations of the cube checks this. Field expressions read them as world vectors through the Piola
-maps, `div()` of an `HDiv` field through `td.hdiv_div` and `curl()` of an `HCurl` field through
-`td.hcurl_curl`.
+**Vector spaces.** Tack has `HDiv` (Raviart-Thomas) and `HCurl` (Nedelec, first kind), from this
+work: at order 1 on hexahedra, voxels and tetrahedra, and of any order on hexahedra and voxels.
+Above order 1 their values on shared faces and edges are kept in the face's or edge's own frame, so
+cells that number their corners differently read them alike. A test fills both with random values
+and compares the two sides' normal or tangential components at points of every interior face, on
+hexahedra numbered by all 48 symmetries of the cube (some inside out, which `HDiv` handles by
+dividing by |det J|), non-affine hexahedra, voxels, and tetrahedra with permuted corners. Field
+expressions read them as world vectors through the Piola maps, `div()` of an `HDiv` field through
+`td.hdiv_div` and `curl()` of an `HCurl` field through `td.hcurl_curl`.
 
 **Expressions without storing them.** `fx.field(text, data)` is a `td.Field` computed wherever an
 algorithm reads it, and `fx.contour` contours an expression with nothing stored: each crossing is
@@ -396,8 +397,8 @@ Further checks cover what was added after the first round, all passing on CUDA a
 | Five expressions on 4 pieces with a ghost layer: owned mean, min, max and count | the unsplit mesh | 1.6e-7 |
 | `HDiv` and `HCurl` fields of linear and constant vectors; `div()` of the `HDiv` field | exact values | 2.9e-7 |
 
-On the Tack branches, the new spaces' tests pass on CPU and CUDA, with the tack-vis tests for
-gradients, the world Hessian and VTK interop.
+In Tack, the new spaces' tests pass on CPU and CUDA, with the tack-vis tests for gradients, the
+world Hessian and VTK interop.
 
 Later tests cover the second and third rounds of work, all passing on CUDA and CPU:
 
@@ -482,26 +483,23 @@ ms on the same grid, against 0.39 ms for `td.project` and a second kernel.
 
 Everything in this document is implemented and tested. It lives on the `field-expression-support`
 branch of [jlee-kitware/tack](https://github.com/jlee-kitware/tack/tree/field-expression-support), a
-fork of Tack, so changes to Tack core can be discussed before any pull request. The Tack core
-changes it relies on are four pull requests to Tack, rebased onto its main:
+fork of Tack, on Tack's main. The Tack core changes it relies on were four pull requests, now
+merged:
 
 | Where | What |
 | --- | --- |
-| pull request `core/if-hoist-types` | the C-family code generator types variables first assigned inside an `if` in linear time |
-| pull request `fix/vtk-char-signedness` | VTK interop reads a `vtkCharArray` as signed or unsigned by its range |
-| pull request `vis/world-hessian` | `shape_hessian`, `parametric_hessian` and `geometry_curvature`; public `world_gradient`, `world_hessian` and `world_jet` |
-| pull request `vis/hdiv-hcurl`, on `vis/world-hessian` | the `HDiv` and `HCurl` spaces |
-| `packages/tack-expr` on `field-expression-support`, on `vis/hdiv-hcurl` | the compiler, derivatives (of tensors too), `compile_many`, expression fields with bounds and their contours, ghost refresh, the Python operators, units on every entry point, the field dictionary, tensors and complex values (a complex result as two fields); tests, examples and this document. The contour hook for evaluated and continuous spaces is here too, not yet proposed. |
+| #257 `core/if-hoist-types` | the C-family code generator types variables first assigned inside an `if` in linear time |
+| #258 `fix/vtk-char-signedness` | VTK interop reads a `vtkCharArray` as signed or unsigned by its range |
+| #259 `vis/world-hessian` | `shape_hessian`, `parametric_hessian` and `geometry_curvature`; public `world_gradient`, `world_hessian` and `world_jet` |
+| #260 `vis/hdiv-hcurl` | the `HDiv` and `HCurl` spaces |
+| `packages/tack-expr` on `field-expression-support` | the compiler, derivatives (of tensors too), `compile_many`, expression fields with bounds and their contours, ghost refresh, the Python operators, units on every entry point, the field dictionary, tensors and complex values (a complex result as two fields); tests, examples and this document. The contour hook for evaluated and continuous spaces is here too, not yet proposed. |
 
 The next steps:
 
-1. **Review of the four pull requests.** They are rebased onto Tack's main with its documentation
-   refactor.
-2. **tack-expr as a pull request**, after the core pieces, with the contour hook for evaluated and
-   continuous spaces.
-3. **Vector spaces above order 1 on tetrahedra**, with face and interior moments in barycentric
+1. **tack-expr as a pull request**, with the contour hook for evaluated and continuous spaces.
+2. **Vector spaces above order 1 on tetrahedra**, with face and interior moments in barycentric
    bases.
-4. **Every rank in the ghost exchange.** A rank that owns no pieces skips the `td.update_ghosts`
+3. **Every rank in the ghost exchange.** A rank that owns no pieces skips the `td.update_ghosts`
    call that `update_ghosts=True` makes, because it names the fields from a local piece; naming them
    from the dataset's field names would keep every rank in the exchange. Tack tests the exchange
    itself across ranks.
