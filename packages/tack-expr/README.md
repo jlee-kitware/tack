@@ -107,6 +107,27 @@ fx.curl(W)).eval(data)`, described under Python operators. Units, the field dict
 values work the same way from Python. Agents still send strings, which can be checked and cannot run
 code.
 
+## One field interface
+
+A solver keeps its state in its own arrays and kernels, and the things that read its results see
+fields. tack-lbm, a lattice Boltzmann solver written in Tack, steps flat `tack.array`s with
+`@tack.kernel`s and never imports `tack.dataset`. At each Catalyst call it wraps its output arrays
+as `td.Field`s on a `td.uniform_grid`, a few lines, and expressions and Tack's filters read them
+there. STAR-CCM+ makes the same split: the solver owns its storage, and post-processing reads field
+functions.
+
+So expressions can be Tack's one field interface on the consumer side, for filters, Catalyst, apps
+and agents. Every filter would take a `Field` or a string: a bare name returns the stored field
+unchanged, with no kernel, and any other string is an expression, the saved form of the tree the
+Python operators build. That retires the duplicate entry points, such as `fx.contour` beside
+`td.contour`.
+
+The views (`u.value`, `parametric_gradient`, `world_gradient`) stay the interface on the solver and
+kernel side, and the compiler generates against them. Expressions are read-only, so writing a field
+in place, the ghost exchange of storage and I/O stay with stored fields. Whether Tack's filters
+parse strings in core, or call tack-expr when it is installed, is the open question for Tack's
+maintainers.
+
 ## Overview
 
 A parser reads the expression, checks each operation's scalar and vector types and where each field
