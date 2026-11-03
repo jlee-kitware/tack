@@ -164,8 +164,9 @@ search from the points uses no atomics, and everything else works there.
   cell is on.
 - On a polyhedral topology the faces are given, not derived, and keep their
   given numbering.
-- A polyhedral topology also derives each cell's distinct points
-  (`cell_points()`), for point data.
+- Unstructured, polyhedral and polyline topologies also derive each cell's
+  distinct points, sorted (`cell_points()`, CSR `(offsets, point_ids)`), for
+  point data.
 
 ### Converting and checking
 
@@ -708,7 +709,7 @@ combine pieces.
   input's own ghost marks come along. An unstructured mesh is partitioned by
   VTK (`vtkRedistributeDataSetFilter`) or by its host application.
 - **`ghost_cells(pds, layers=1, world=None, fields=None)`** gives each
-  unstructured piece a layer of its neighbours' cells, as VTK's
+  unstructured or polyhedral piece (all of one kind) a layer of its neighbours' cells, as VTK's
   `vtkGhostCellsGenerator` does, in one process (pieces on any devices) or
   across MPI ranks. Pieces neighbour where they share points at exactly the
   same position; a piece gains the cells of others that use a point it
@@ -1095,7 +1096,7 @@ What each filter gives:
 | `contour`, `slice`, `slice_plane` | interpolated along edges | pieces of the cut cells | — | — |
 | `clip` | kept points, edge crossings and centroids | pieces of the cut cells, whole kept ones | — | — |
 | `extract_points`, `threshold_points`, `mask_points` | kept points, each a vertex cell | — | — | — |
-| `extract_surface` | the same points | pieces (each face's cell); face values become cell values | — | — |
+| `extract_surface` | the points the faces use, in order | pieces (each face's cell); face values become cell values | — | — |
 | `extract_edges` | the same points | — (an edge has several cells) | — | the lines' cells: edge values become cell values |
 | `as_polyhedra` | same | same | same | same |
 | `as_polygons` | same | same | — | — |
@@ -1227,11 +1228,11 @@ every field and set kept; on an `L2` geometry each cell's own corners move.
 | `split(data, pieces, ghost_layers=0)` | a structured grid cut into a `PartitionedDataSet`, with ghost layers (see *Partitioned datasets*) |
 | `remove_ghosts(data)` | `data` without its duplicate and hidden cells, keeping the points it owns (see *Partitioned datasets*) |
 | `connected_components(data)` | which cells are connected through shared points, as VTK's `vtkConnectivityFilter` (all regions, colored) and Viskores' `CellSetConnectivity`: `data` with `region` on the cells and `point_region` on the points, numbered from 0 in order of their lowest cell (VTK's numbering); -1 for hidden cells and unused points; union-find on the device. Of a `PartitionedDataSet` too: regions numbered across every piece and rank, in order of their lowest global cell id where pieces have global ids (the whole's numbering for the whole's ids) |
-| `merge_points(data, tolerance=0)` | coincident points made one, as VTK's `vtkStaticCleanUnstructuredGrid` and Viskores' `CleanGrid` merge them: points at most `tolerance` apart join, chains of them too (union-find through the point locator's bins, each set's root its smallest point whatever the order), and each set becomes its smallest point, keeping its position, point fields, marks and global id; the cells are the same on the merged points. For meshes written without merging their points, which must be merged before their pieces can be matched: the 512 pieces of a simulation's output, each storing a point about 2.6 times, merged piece by piece then numbered by `generate_global_ids`, give the merged mesh's 6,310,285 points. Unstructured topologies |
+| `merge_points(data, tolerance=0)` | coincident points made one, as VTK's `vtkStaticCleanUnstructuredGrid` and Viskores' `CleanGrid` merge them: points at most `tolerance` apart join, chains of them too (union-find through the point locator's bins, each set's root its smallest point whatever the order), and each set becomes its smallest point, keeping its position, point fields, marks and global id; the cells are the same on the merged points. For meshes written without merging their points, which must be merged before their pieces can be matched: the 512 pieces of a simulation's output, each storing a point about 2.6 times, merged piece by piece then numbered by `generate_global_ids`, give the merged mesh's 6,310,285 points. Unstructured, polyhedral, polygonal and polyline topologies; a polyhedral mesh's faces are matched again, so a face the pieces each stored once (OpenFOAM's processor boundaries) becomes one face with both cells |
 | `ghost_cells(pds, layers=1, tolerance=0)` | unstructured pieces with a layer of their neighbours' cells, as `vtkGhostCellsGenerator` (see *Partitioned datasets*); with `tolerance`, pieces share points at most that far apart, for copies that differ in their last bits |
 | `update_ghosts(pds, *fields)` | ghost values refreshed from their owners, in place, for pieces `ghost_cells` made |
 | `merge_pieces(pds, root=0, tolerance=0)` | the pieces as one dataset, each cell and point once (see *Partitioned datasets*); `tolerance` as `generate_global_ids` takes it |
-| `generate_global_ids(pds, tolerance=0)` | the pieces' points and cells numbered across all of them, as `vtkGenerateGlobalIds` (see *Partitioned datasets*); with `tolerance` (VTK's `Tolerance`), points of different pieces at most that far apart are one, and so are chains of them. Points a piece repeats within itself stay apart: `merge_points` merges them first |
+| `generate_global_ids(pds, tolerance=0)` | the pieces' points and cells numbered across all of them, as `vtkGenerateGlobalIds` (see *Partitioned datasets*); with `tolerance` (VTK's `Tolerance`), points of different pieces at most that far apart are one, and so are chains of them. Points a piece repeats within itself stay apart: `merge_points` merges them first. On a filter's output from pieces without ghost cells, which lost its marks, every point and cell is matched and the owners marked, so reductions take it |
 | `sources.wavelet(extent, ...)` | VTK's and Viskores' wavelet (`RTData`) on a uniform grid |
 | `sources.tangle(dims)` | Viskores' tangle cube (`tangle`) on [0, 1]^3 |
 
@@ -1419,7 +1420,7 @@ solid cells walk: pyramids, polyhedra and surfaces search the bins as before.
 
 | Function | |
 |---|---|
-| `tack.interop.vtk.vtk_to_dataset(grid, dtype=tack.f32, polyhedral=None, orient=False, id_dtype=None)` | a `vtkUnstructuredGrid`, `vtkPolyData` (as the unstructured grid of its cells; strips as their triangles), rectilinear grid or image (`vtkImageData`, as `UniformCoordinates`). Point data becomes `H1`, cell data `Constant`. A grid with polyhedra becomes polyhedral (`polyhedral=True` forces it); `orient` repairs inconsistent winding |
+| `tack.interop.vtk.vtk_to_dataset(grid, dtype=tack.f32, polyhedral=None, orient=False, id_dtype=None, merge_points=None)` | a `vtkUnstructuredGrid`, `vtkPolyData` (as the unstructured grid of its cells; strips as their triangles), rectilinear grid or image (`vtkImageData`, as `UniformCoordinates`). Point data becomes `H1`, cell data `Constant`. A grid with polyhedra becomes polyhedral (`polyhedral=True` forces it); `orient` repairs inconsistent winding; `merge_points` (`True` or a tolerance) merges an unstructured grid's coincident points first |
 | `tack.interop.vtk.dataset_to_vtk(data)` | back to VTK, polyhedra and polygons included |
 | (both) | a `vtkPartitionedDataSet` and a `PartitionedDataSet` convert piece by piece (null pieces skipped); a `vtkPartitionedDataSetCollection` and a `dict` of names to `PartitionedDataSet`s convert by `vtkCompositeDataSet.NAME()` (`"block<i>"` without one, `"<name>#<i>"` for a name taken) |
 | `tack.interop.mfem.mfem_to_dataset(mesh, fields=None, dtype=tack.f32, id_dtype=None)` | an MFEM mesh, curved at order 2 too, with its grid functions |

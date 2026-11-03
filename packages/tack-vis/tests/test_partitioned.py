@@ -140,6 +140,21 @@ def _check_pieces(whole, pieces, counts):
 
 # ── The container ───────────────────────────────────────────────────
 
+
+@pytest.mark.parametrize("n", [1, 4096, 4097, 3 * 4096 + 5])
+def test_whether_any_mark_has_a_bit(n):
+    """ghosts._has, a flag per chunk of 4096 marks with no atomics: one marked element
+    anywhere, the last of the last chunk included, is found; none is none."""
+    from tack.dataset.ghosts import _has
+
+    for at in sorted({0, n // 2, n - 1}):
+        marks = np.zeros(n, np.uint8)
+        marks[at] = Ghosts.DUPLICATEPOINT | Ghosts.HIDDENPOINT
+        assert _has(tack.array(marks), Ghosts.DUPLICATEPOINT)
+        assert not _has(tack.array(marks), Ghosts.REFINEDPOINT)
+    assert not _has(tack.array(np.zeros(n, np.uint8)), Ghosts.DUPLICATEPOINT)
+    assert not _has(None, Ghosts.DUPLICATEPOINT)
+
 def test_a_partitioned_dataset_is_a_list_of_datasets():
     a, b = td.uniform_grid((3, 3)), td.uniform_grid((4, 2))
     pds = td.PartitionedDataSet([a, b])
@@ -541,6 +556,62 @@ def test_two_dimensional_pieces_give_their_shares():
         _check_shares(grid, pieces, filter)
 
 
+def _faces_by_position(surface):
+    """A surface's owned faces, each by its points' positions, as a multiset."""
+    from collections import Counter
+
+    x = surface.positions()
+    if isinstance(surface.topology, td.UnstructuredTopology):
+        offsets = tack.arrays.to_host(surface.topology.offsets)
+        ids = tack.arrays.to_host(surface.topology.connectivity)
+    else:
+        offsets, ids = (o.numpy() for o in surface.topology.cell_points())
+    marks = (surface.ghosts.cells.numpy() if surface.ghosts is not None
+             and surface.ghosts.cells is not None else np.zeros(surface.num_cells, np.uint8))
+    return Counter(tuple(sorted(tuple(np.round(x[q], 5)) for q in ids[offsets[c]:offsets[c + 1]]))
+                   for c in range(surface.num_cells) if not marks[c] & Ghosts.DUPLICATECELL)
+
+
+@pytest.mark.parametrize("kind", ["no ghost cells", "ghost cells", "polyhedra"])
+def test_the_surface_of_pieces_is_the_wholes(kind):
+    """extract_surface of a PartitionedDataSet: each piece's boundary less the faces
+    two pieces share, which pieces without ghost cells take for boundary. The owned
+    faces over the pieces are the whole's surface, face for face, and its points
+    are owned once."""
+    whole = td.wavelet(6)
+    pieces = td.split(whole, (2, 2, 2), ghost_layers=1 if kind == "ghost cells" else 0)
+    if kind == "polyhedra":
+        pieces = td.PartitionedDataSet([td.as_polyhedra(p) for p in pieces])
+    expected = td.extract_surface(whole if kind != "polyhedra" else td.as_polyhedra(whole))
+    surface = td.extract_surface(pieces)
+    got = sum((_faces_by_position(p) for p in surface), start=type(_faces_by_position(expected))())
+    assert got == _faces_by_position(expected)
+    assert td.statistics(surface, "RTData").n == expected.num_points
+    if kind == "no ghost cells":
+        naive = sum(td.extract_surface(p).num_cells for p in pieces)
+        assert naive > expected.num_cells             # the faces between pieces
+    with pytest.raises(TypeError, match="choose faces of each piece"):
+        td.extract_surface(pieces, faces="boundary")
+
+
+def test_the_surface_of_pieces_whose_own_surfaces_are_not_manifold():
+    """A piece whose cells touch along an edge alone (a sheet of polyhedra one cell
+    thick meeting itself, as in the AhmedML mesh) has an own surface with edges of
+    four faces, which a polygonal topology refuses; the pieces' boundary faces are
+    matched before any surface is made, so the whole's surface comes out."""
+    whole = td.as_polyhedra(td.wavelet(1))                       # 2 x 2 x 2 cells
+    centers = td.cell_centers(whole).values.numpy()
+    diagonal = (centers[:, 0] > 0) == (centers[:, 1] > 0)      # (0,0) and (1,1) columns
+    pieces = td.PartitionedDataSet([td.extract_cells(whole, np.flatnonzero(diagonal)),
+                                    td.extract_cells(whole, np.flatnonzero(~diagonal))])
+    with pytest.raises(ValueError, match="more than two polygons"):
+        td.extract_surface(pieces[0])
+    surface = td.extract_surface(pieces)
+    total = sum((_faces_by_position(p) for p in surface),
+                start=type(_faces_by_position(surface[0]))())
+    assert total == _faces_by_position(td.extract_surface(whole))
+
+
 def test_pieces_without_ghost_cells_refuse_what_their_neighbours_decide():
     """Without ghost cells a piece cannot tell what its neighbours make or keep from
     the cells, faces and edges they share: a point on a shared edge, a shared
@@ -558,6 +629,39 @@ def test_pieces_without_ghost_cells_refuse_what_their_neighbours_decide():
             td.entropy(out[1], "RTData")
     points = [td.threshold_points(piece, "RTData", 0.0, 1e9) for piece in pieces]
     assert td.statistics(td.PartitionedDataSet(points), "RTData").n == whole.num_points
+
+
+@pytest.mark.parametrize("name", [n for n in _FILTERS if "surface" not in n])
+def test_generate_global_ids_marks_outputs_that_lost_the_marks(name):
+    """What a piece without ghost cells cannot decide alone, ``generate_global_ids``
+    decides by matching the outputs: every point several pieces made is the
+    lowest's, every cell several made (by its points' ids) too, so the marked
+    outputs reduce to the whole's output, cell for cell and point for point; the
+    refusal names it. Pieces with ghost cells and no point marks too.
+    (``extract_surface`` is the exception: a piece's surface includes the faces
+    it shares, which the whole's has not.)"""
+    whole = td.wavelet(6)
+    filter = _FILTERS[name]
+    bare = td.split(whole, (2, 2, 2))                       # no ghost layers
+    ghosted = td.split(whole, (2, 2, 2), ghost_layers=1)
+    for p in ghosted:                                       # ghost cells, no point marks
+        p.ghosts = Ghosts(cells=p.ghosts.cells)
+    for pieces in (bare, ghosted):
+        outputs = td.PartitionedDataSet([filter(p) for p in pieces])
+        if any(out._ghosts_lost for out in outputs):
+            with pytest.raises(NotImplementedError, match="generate_global_ids"):
+                td.statistics(outputs, "RTData")
+        elif pieces is ghosted:
+            continue        # kept points keep the marks they were given, none here
+        marked = td.generate_global_ids(outputs)
+        assert not any(out._ghosts_lost for out in marked)
+        expected = filter(whole)
+        owned = np.sum([_owned_counts(out) for out in marked], axis=0)
+        assert tuple(int(v) for v in owned) == (expected.num_cells, expected.num_points)
+        if "RTData" in expected.fields:
+            a, b = td.statistics(expected, "RTData"), td.statistics(marked, "RTData")
+            assert b.n == a.n
+            assert b.mean == pytest.approx(a.mean, rel=1e-5)
 
 
 def test_filters_that_keep_the_cells_keep_the_marks():

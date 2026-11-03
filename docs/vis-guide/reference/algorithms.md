@@ -45,7 +45,7 @@ topologies, sets, implicit functions, locators -- are in
 
 - [Cells kept whole](#cells-kept-whole): New datasets of some of the input's cells, unchanged, with only the points they use.
 - [Cutting](#cutting): New datasets of pieces of cells, with points made on their edges.
-- [Surfaces and edges](#surfaces-and-edges): A mesh's faces and edges, as sets or datasets on the same points.
+- [Surfaces and edges](#surfaces-and-edges): A mesh's faces and edges, as sets or datasets: a surface on the points its faces use, edges on the same points.
 - [Shapes for drawing](#shapes-for-drawing): Geometry made to be drawn: what a renderer would otherwise make from lines and vectors, made by Tack so its fields and marks come along.
 - [Connectivity and winding](#connectivity-and-winding): Which cells belong together, and which are wound wrong.
 - [Changing cell types](#changing-cell-types): The same points and region, in other cells.
@@ -111,12 +111,14 @@ New datasets of pieces of cells, with points made on their edges.
 
 ## Surfaces and edges
 
-A mesh's faces and edges, as sets or datasets on the same points.
+A mesh's faces and edges, as sets or datasets: a surface on the points its faces
+use (renumbered in order, as VTK's geometry filter keeps them), edges on the
+same points.
 
 | Algorithm | Gives | Takes | VTK | Viskores |
 |---|---|---|---|---|
 | [`boundary_faces`](#tack.dataset.algorithms.boundary_faces.boundary_faces) | the boundary, as a face set | dataset | — | — |
-| [`extract_surface`](#tack.dataset.algorithms.extract_surface.extract_surface) | faces (the boundary by default) as cells | dataset | vtkDataSetSurfaceFilter | ExternalFaces |
+| [`extract_surface`](#tack.dataset.algorithms.extract_surface.extract_surface) | faces (the boundary by default) as cells; of pieces, the whole's surface | dataset, or pieces | vtkDataSetSurfaceFilter | ExternalFaces |
 | [`extract_edges`](#tack.dataset.algorithms.extract_edges.extract_edges) | edges as line cells | dataset | vtkExtractEdges | — |
 | [`feature_edges`](#tack.dataset.algorithms.feature_edges.feature_edges) | a surface's boundary, feature, non-manifold and manifold edges | dataset | vtkFeatureEdges | — |
 | [`surface_normals`](#tack.dataset.algorithms.surface_normals.surface_normals) | cell and point normals of a surface, wound consistently | dataset | vtkPolyDataNormals | SurfaceNormals |
