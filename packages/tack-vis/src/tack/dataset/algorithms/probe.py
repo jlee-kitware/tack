@@ -36,6 +36,26 @@ def _evaluate_in_tets(cells, u, links, link_points, tets, pcs, out):
 
 
 @tack.kernel
+def _evaluate_in_moved_tets(cells, u, starts, weights, links, link_points, tets, pcs, out):
+    # As _evaluate_in_tets, point data in polyhedra whose cell points the locator
+    # moved (CellLocator.moved_cell_points): there, the cell point's value is the
+    # sum of the points' values by its weights.
+    for c in cells:
+        e = cells.entity_id(c)
+        if links[e + 1] > links[e]:
+            s = starts[e]
+            u0 = u.cell_point_value(c)
+            if s >= 0:
+                first = u.corner_value(c, 0)
+                u0 = first
+                for j in range(1, cells.num_points(c)):
+                    u0 += (u.corner_value(c, j) - first) * weights[s + j]
+            for n in range(links[e], links[e + 1]):
+                q = link_points[n]
+                out[q] = u.tet_value_from(c, tets[q], pcs[q], u0)
+
+
+@tack.kernel
 def _values_from_points(mesh, field, found, pcs, tets, out):
     # One thread per point, the field read by cell id (by_id).
     for q in range(found.shape[0]):
@@ -188,7 +208,12 @@ def probe(data, where, fields=None, locator=None):
             values.fill(0)
             order, links = by_cell()
             for group in data.launch_groups("cells", [f]):
-                if group.count and locator.polyhedral:
+                if (group.count and locator.moved_cell_points is not None
+                        and isinstance(space, H1)):
+                    _evaluate_in_moved_tets(data.domain_view("cells", group), f.view(group),
+                                            *locator.moved_cell_points, links, order, tets,
+                                            pcs, values)
+                elif group.count and locator.polyhedral:
                     _evaluate_in_tets(data.domain_view("cells", group), f.view(group), links,
                                       order, tets, pcs, values)
                 elif group.count:
@@ -225,13 +250,17 @@ def _to_integers(values, width, dtype, evaluated):
     return out
 
 
-def _held_box(piece):
+def _held_box(piece, locator):
     """A piece's box, grown by what its locator accepts outside a cell: a share
-    (``locator._TOLERANCE``) of a cell's diagonal, so of the piece's at most."""
+    (``locator._TOLERANCE``) of a cell's diagonal, so of the piece's at most. The
+    box of its cells is the locator's, found once when it was made, rather than
+    the positions' bounds taken on the host on every call (a second of each
+    streamlines call over the AhmedML mesh's 21M-cell piece)."""
     from tack.dataset.locator import _TOLERANCE
 
-    x = piece.positions().astype(np.float64)
-    lower, upper = x.min(axis=0), x.max(axis=0)
+    # Relative to the piece's origin, as positions and the points routed are.
+    lower = np.asarray(locator.box[0], np.float64)
+    upper = np.asarray(locator.box[1], np.float64)
     grow = _TOLERANCE * float(np.linalg.norm(upper - lower))
     return lower - grow, upper + grow
 
@@ -275,9 +304,9 @@ def _probe_pieces(data, where, fields, levels=None):
     locators = {}
     for g, piece in zip(blocks.local, pieces):
         if piece.num_points:
-            boxes[g] = _held_box(piece)
             with piece.device:
                 locators[g] = cached_locator(piece)
+            boxes[g] = _held_box(piece, locators[g])
         else:
             boxes[g] = None
 
