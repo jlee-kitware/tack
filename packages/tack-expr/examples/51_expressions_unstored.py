@@ -5,7 +5,7 @@ sqrt(s^2 - w^2), so each result is checked:
 
 - fx.function: an expression as a device function that a threshold kernel calls at each cell
   center, against the speed computed on the host;
-- fx.contour: the surface |v| = s, the expression evaluated where the contour reads it and
+- td.contour of the text: the surface |v| = s, the expression evaluated where the contour reads it and
   each crossing its own root, on cells subdivided by the velocity's order (2), against the
   cylinder's radius; nothing is added to the fields;
 - pieces with a ghost layer: a chain of evaluations that average over neighbours gives what
@@ -61,7 +61,7 @@ expected = np.sqrt(xc[:, 0] ** 2 + xc[:, 1] ** 2 + W * W) > S
 assert np.array_equal(mask.numpy() > 0.5, expected)
 print(f"threshold kernel calling mag(velocity): {int(expected.sum())} of {data.num_cells} cells faster than {S}")
 
-surface = fx.contour("mag(velocity)", data, S)
+surface = td.contour(data, "mag(velocity)", S)
 xs = np.asarray(surface.positions(), np.float64)
 err = float(np.abs(np.hypot(xs[:, 0], xs[:, 1]) - np.sqrt(S * S - W * W)).max())
 print(f"contour of mag(velocity) = {S}: {surface.num_cells} triangles, radius error {err:.1e}")

@@ -175,11 +175,6 @@ class Expr:
             f = lazy.field(text, data)
         return td.Field(f.space, f.values, unit) if unit is not None else f
 
-    def contour(self, data, value, fields=None, units=None, **kwargs):
-        text, names, _ = self._prepare(data, fields, units)
-        with P.bound(names):
-            return lazy.contour(text, data, value, **kwargs)
-
     def function(self, data, at="cells", fields=None, units=None):
         """The expression as a device class for kernels of your own (tack_expr.for_each)."""
         text, names, _ = self._prepare(data, fields, units)

@@ -67,9 +67,9 @@ def test_unbounded_where_there_is_no_rule(data):
 
 @pytest.mark.parametrize("text", ("u * T + 1", "exp(-u) - T ^ 2", "abs(u) - sqrt(abs(T))"))
 def test_a_contour_with_bounds_is_the_contour_without(data, text, monkeypatch):
-    bounded = fx.contour(text, data, 0.4, subdivision=2)
+    bounded = td.contour(data, fx.field(text, data), 0.4, subdivision=2)
     monkeypatch.setattr(lazy, "_ranges", lambda text, data: None)
-    unbounded = fx.contour(text, data, 0.4, subdivision=2)
+    unbounded = td.contour(data, fx.field(text, data), 0.4, subdivision=2)
     assert bounded.num_cells == unbounded.num_cells
     a = np.sort(bounded.positions().round(5).view(f"V{3 * bounded.positions().dtype.itemsize}").ravel())
     b = np.sort(unbounded.positions().round(5).view(f"V{3 * unbounded.positions().dtype.itemsize}").ravel())

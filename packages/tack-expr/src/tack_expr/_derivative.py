@@ -157,19 +157,20 @@ class Derivative:
             self.error(f"derivatives of {type(field.space).__name__} fields inside an expression "
                        "are not implemented", pos)
         constant = kind == "values-cells" or isinstance(field.space, P.td.Constant)
-        if kind != "basis" or constant:
+        given = getattr(field, "gradient", None) is not None
+        if kind != "basis" or (constant and not given):
             return value, t, None
         pc = p.pc(pos)
         p.uses_world_gradient = True
         if t == S:
             u = p.arg("field", name, p.by_name(name))
-            return value, S, p.load(f"grad:{name}", f"_world_gradient(dom, {u}, c, {pc})", V)[0]
+            return value, S, p.load(f"grad:{name}", p.world_gradient(u, field, pc), V)[0]
         whole = p.by_name(name)
         parts = p.once(f"components:{name}", lambda d, m: P._components(whole(d, m)))
         rows = []
         for k in range(3):
             u = p.arg("field", f"{name}#{k}", lambda d, m, k=k: parts(d, m)[k])
-            rows.append(p.load(f"grad:{name}#{k}", f"_world_gradient(dom, {u}, c, {pc})", V)[0])
+            rows.append(p.load(f"grad:{name}#{k}", p.world_gradient(u, field, pc), V)[0])
         return value, V, p.load(f"jac:{name}", f"tack.mat3({', '.join(rows)})", V)[0]
 
     def args_list(self, close):

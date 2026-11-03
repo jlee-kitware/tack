@@ -167,6 +167,8 @@ class _Compiler:
         self.loaded = {}
         self.consts = []
         self.uses_world_gradient = False
+        self.held = False        # compiling a method of an expression field's view
+        self.uses_held = False
         self.uses_vector_spaces = False
         self.uses_derivatives = False
         self.uses_hcurl_curl = False
@@ -175,6 +177,39 @@ class _Compiler:
         self.uses_pc = False
         self.bindings = _BINDINGS.get() or {}
         self.matrices = set()
+        self.toks = self._expand(self.toks, ())
+
+    def _expand(self, toks, within):
+        """The tokens with each name of a stored expression (``fx.field``) replaced by its
+        expression in parentheses, its own names included, so it compiles into the same
+        kernel with its derivatives by the chain rule and binds when evaluated. A name a
+        conversion takes (``points(T2)``) stays a name."""
+        out = []
+        for i, (kind, val, pos) in enumerate(toks):
+            name = val[1:-1] if kind == "str" else val if kind == "name" else None
+            before = [t[1] for t in out[-2:]]
+            takes_name = len(before) == 2 and before[1] == "(" and before[0] in _TAKES_A_NAME
+            stored = None
+            if name and not takes_name and (i + 1 == len(toks) or toks[i + 1][1] != "("):
+                stored = _stored_expression(self._named(name))
+            if stored is None:
+                out.append((kind, val, pos))
+                continue
+            if name in within:
+                raise ExprError(f"'{name}' is defined in terms of itself", pos, self.text)
+            self.bindings = {**self.bindings, **getattr(stored.space, "names", {})}
+            inner = self._tokenize(stored.space.text)[:-1]
+            out += [("op", "(", pos), *[(k, v, pos) for k, v, _ in
+                                        self._expand(inner, (*within, name))], ("op", ")", pos)]
+        return out
+
+    def _named(self, name):
+        if name in self.bindings:
+            return self.bindings[name]
+        try:
+            return self.data.fields[name]
+        except (KeyError, ValueError, TypeError):
+            return None
 
     # --- emission -------------------------------------------------------
 
@@ -222,6 +257,17 @@ class _Compiler:
         if code.startswith("c") and code[1:].isdigit():
             return self.consts[int(code[1:])]
         return None
+
+    def world_gradient(self, u, field, pc):
+        """Code for the world gradient of field view u. Inside an expression field's view
+        the leaf's view is held, so its gradient is written out from its parts."""
+        if not self.held:
+            return f"_world_gradient(dom, {u}, c, {pc})"
+        self.uses_held = True
+        if getattr(field, "gradient", None) is not None:
+            return f"{u}.given_gradient.value(c, {pc})"
+        return (f"held_gradient(dom.geometry_jacobian(c, {pc}), {u}.parametric_gradient(c, {pc}), "
+                "dom.DIMENSION)")
 
     def load(self, key, code, t):
         if key not in self.loaded:
@@ -480,7 +526,7 @@ class _Compiler:
         out = []
         for k in range(9):
             u = self.arg("field", f"{name}#t{k}", lambda d, m, k=k: parts(d, m)[k])
-            out.append(self.load(f"grad:{name}#t{k}", f"_world_gradient(dom, {u}, c, {pc})", V)[0])
+            out.append(self.load(f"grad:{name}#t{k}", self.world_gradient(u, None, pc), V)[0])
         return out
 
     def gradient(self, fn, name, pos, field=None, getter=None):
@@ -522,14 +568,14 @@ class _Compiler:
             return self.load(f"div:{name}", f"tack.vec3({', '.join(rows)})", V)
         if fn == "grad" and not _is_vector(field):
             u = self.arg("field", name, getter)
-            return self.load(f"grad:{name}", f"_world_gradient(dom, {u}, c, {pc})", V)
+            return self.load(f"grad:{name}", self.world_gradient(u, field, pc), V)
         if not _is_vector(field):
             self.error(f"{fn}() takes a vector field", pos)
         rows = []
         parts = self.once(f"components:{name}", lambda d, m, g=getter: _components(g(d, m)))
         for k in range(3):
             u = self.arg("field", f"{name}#{k}", lambda d, m, k=k: parts(d, m)[k])
-            rows.append(self.load(f"grad:{name}#{k}", f"_world_gradient(dom, {u}, c, {pc})", V)[0])
+            rows.append(self.load(f"grad:{name}#{k}", self.world_gradient(u, field, pc), V)[0])
         gx, gy, gz = rows   # row i: the gradient of component i
         if fn == "grad":
             return self.load(f"jac:{name}", f"tack.mat3({gx}, {gy}, {gz})", M)
@@ -874,14 +920,42 @@ _links_cache = {}
 
 
 def _components(field):
-    """A vector field's three components as scalar fields in its space, copied now."""
+    """A vector field's three components as scalar fields in its space, copied now, each
+    with its row of the field's given gradient where it has one."""
     values = materialize(field.values)
+    rows = _gradient_rows(getattr(field, "gradient", None))
     parts = []
     for k in range(3):
         part = tack.empty((field.space.size,), tack.arrays.dtype_of(values))
         component(values, k, part, field.space.size)
-        parts.append(td.Field(field.space, part))
+        if rows is None:
+            parts.append(td.Field(field.space, part))
+        else:
+            parts.append(td.Field(field.space, part, gradient=rows[k]))
     return parts
+
+
+def _gradient_rows(given):
+    """A vector field's given gradient (9 values each, row by row) as three fields of rows."""
+    if given is None:
+        return None
+    values = materialize(given.values)
+    flat = np.asarray(values.numpy()).reshape(given.space.size, 9)
+    out = []
+    for k in range(3):
+        row = tack.empty((given.space.size,), tack.vec3(values.scalar_dtype))
+        tack.copyto(row, np.ascontiguousarray(flat[:, 3 * k:3 * k + 3]))
+        out.append(td.Field(given.space, row, given.unit))
+    return out
+
+
+def _stored_expression(field):
+    """The expression field a name refers to, or None."""
+    space = getattr(field, "space", None)
+    return field if type(space).__name__ == "ExpressionSpace" and hasattr(space, "text") else None
+
+
+_TAKES_A_NAME = ("points", "cells", "owner", "neighbor", "fsum")
 
 
 def _tensor_components(field):
@@ -1068,6 +1142,8 @@ def _imports(c):
         imports += "from tack.dataset import hcurl_curl\n"
     if c.uses_hdiv_div:
         imports += "from tack.dataset import hdiv_div\n"
+    if c.uses_held:
+        imports += "from tack_expr._held import held_gradient, held_hessian\n"
     return imports + (_GRADIENT_IMPORT if c.uses_world_gradient else "")
 
 
