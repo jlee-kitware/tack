@@ -176,7 +176,7 @@ def test_units_on_every_entry_point(data):
     ref = td.probe(data, td.uniform_grid((3, 3, 3), origin=(0.4, 0.5, 0.5), spacing=(0.1, 0.1, 0.1)),
                    fields=["p"]).fields["p"].values.numpy() * 2000.0
     assert_close(got, ref)
-    surface = fx.contour("p", data, 900.0, fields={"p": "kPa"}, units="Pa")
+    surface = td.contour(data, fx.field("p", data, fields={"p": "kPa"}, units="Pa"), 900.0)
     plain = td.contour(data, "p", 0.9)
     assert surface.num_cells == plain.num_cells
     many = fx.compile_many({"a": data.fields["p"] * 2, "b": "q + p"}, data, at="points",

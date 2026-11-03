@@ -3,8 +3,10 @@
 fx.field(text, data) is a td.Field whose view computes the expression at each point an
 algorithm asks for: value(c, pc), corner_value(c, j), and value_range(c), a bound in each
 cell by interval arithmetic on its fields' Bernstein bounds, for the algorithms that skip
-cells by it (unbounded where the expression has no rule). td.contour takes it as it takes
-a stored field; fx.contour does so with the subdivision its inputs' order calls for.
+cells by it (unbounded where the expression has no rule). Tack's algorithms take it as
+they take a stored field, or its text where a field goes (td.contour(data, "mag(U)", 1.0));
+a contour subdivides by its inputs' largest order. A filter's output has the expression
+again, over the fields carried there, and writers store its values.
 """
 
 import itertools
@@ -41,11 +43,42 @@ class ExpressionSpace(Space):
     def mixin_for(self, key, shape=None):
         return self._mixin
 
+    def rebind(self, field, data):
+        """The expression on ``data``, a filter's output, over the fields carried there;
+        None where one of them was not."""
+        try:
+            with P.bound({**(P._BINDINGS.get() or {}), **self.names}):
+                f = _field(self.text, data, self.derivatives)
+        except (P.ExprError, KeyError, TypeError, ValueError):
+            return None
+        f.space.names = self.names
+        return td.Field(f.space, f.values, field.unit)
+
+    def differentiable(self, field, order):
+        """The field with its gradient (order 1), and its Hessian too (order 2), compiled
+        into its view; td.differentiable asks for them."""
+        if self.derivatives >= order:
+            return field
+        made = self.__dict__.setdefault("_differentiated", {})
+        if order not in made:
+            with P.bound({**(P._BINDINGS.get() or {}), **self.names}):
+                f = _field(self.text, self._data, order)
+            f.space.names = self.names
+            made[order] = f
+        return td.Field(made[order].space, made[order].values, field.unit)
+
+    def stored(self, field, data):
+        """Its values for a writer: at the points where the expression is continuous,
+        otherwise at the cell centers."""
+        with P.bound({**(P._BINDINGS.get() or {}), **self.names}):
+            out = P.evaluate(self.text, data, at="points" if self.continuous else "cells")
+        return td.Field(out.space, out.values, field.unit)
+
     def attributes(self, group=None, dtype=None):
         if group is None:
             return {}
         data = self._data
-        out = {"dom": data.domain_view("cells", group)}
+        out = {"dom": data.domain_view("cells", group), "no_hessian": float("nan")}
         for prefix, args, consts in self._parts:
             memo = {}
             for k, (kind, get) in enumerate(args):
@@ -71,22 +104,25 @@ def _method(lines, result, prefix, name, signature, head=()):
     return f"\n    @tack.func\n    def {name}({signature}):\n" + "".join(f"        {b}\n" for b in body)
 
 
-def field(text, data, fields=None, units=None):
+def field(text, data, fields=None, units=None, derivatives=0):
     """The expression as a td.Field evaluated wherever it is read: by contour, clip,
     probe and the other algorithms that read a field through its view. fields and units:
-    as tack_expr.evaluate's; the field's unit is the expression's."""
+    as tack_expr.evaluate's; the field's unit is the expression's. derivatives: 1 or 2 compiles the
+    gradient, or the Hessian too, into its view now; otherwise td.differentiable does when
+    something asks."""
     from . import _front
     if _front.needs_front(text, fields, units, data) or _front.expands(text, data):
         text, names, unit = _front.prepare(text, data, fields, units)
         with P.bound({**(P._BINDINGS.get() or {}), **names}):
-            f = _field(text, data)
+            f = _field(text, data, derivatives)
         f.space.names = names
         return td.Field(f.space, f.values, unit)
-    return _field(text, data)
+    return _field(text, data, derivatives)
 
 
-def _field(text, data):
+def _field(text, data, derivatives=0):
     c = P._Compiler(text, data, "cells")
+    c.held = True
     result, rtype = c.parse()
     if rtype != P.S:
         raise P.ExprError("a field to contour or clip is a scalar expression", 0, text)
@@ -96,6 +132,7 @@ def _field(text, data):
     continuous = False
     try:
         k = P._Compiler(text, data, "corners")
+        k.held = True
         corner, _ = k.parse()
         parts.append(("B", list(k.args), list(k.consts)))
         head = ["pc = self.dom.parametric_point(j)"] if k.uses_pc else []
@@ -112,6 +149,13 @@ def _field(text, data):
     else:
         methods += ranges[0]
         parts.append(("R", ranges[1], []))
+    if derivatives:
+        more, compilers = _derivative_methods(text, data, parts, derivatives)
+        methods += more
+    else:
+        compilers = []
+    for compiler in compilers:
+        imports = "\n".join(sorted(set(imports.splitlines()) | set(P._imports(compiler).splitlines()))) + "\n"
     # Exact crossings read stored fields' entity values through dof; an expression has none
     # and is read through value there, but the method has to exist for the kernel to build.
     methods += ("\n    @tack.func\n    def dof(self, c, k):\n"
@@ -122,6 +166,9 @@ def _field(text, data):
     space._data = data
     space._parts = parts
     space.continuous = continuous
+    space.derivatives = derivatives
+    orders = [getattr(c.lookup(n, 0).space, "order", 1) for n in sorted(c.fields_read)]
+    space.default_subdivision = max([1] + [o for o in orders if isinstance(o, int)])
     space.source = source
     space.text = text
     space.names = {}
@@ -129,22 +176,36 @@ def _field(text, data):
     return td.Field(space, tack.zeros((data.num_cells,), tack.f64 if real is np.float64 else tack.f32))
 
 
-def contour(text, data, value, subdivision=None, fields=None, units=None, **kwargs):
-    """td.contour of the expression, evaluated where the contour reads it. Inputs above
-    order 1 subdivide each cell by their largest order (or subdivision), and each crossing
-    is the expression's own root along its sub-edge (exact=True, as td.contour's default),
-    or with exact=False the crossing of the lattice values. With no Bernstein bound to skip
-    cells by, every cell is refined."""
-    f = field(text, data, fields, units)
-    with P.bound({**(P._BINDINGS.get() or {}), **f.space.names}):
-        inputs = _fields(f.space.text, data)
-    orders = [getattr(g.space, "order", 1) for g in inputs]
-    order = max([1] + [o for o in orders if isinstance(o, int)])
-    if subdivision is None and order > 1:
-        subdivision = order
-    if subdivision is not None and subdivision > 1:
-        return td.contour(data, f, value, subdivision=subdivision, **kwargs)
-    return td.contour(data, f, value, **kwargs)
+def _derivative_methods(text, data, parts, order=2):
+    """An expression field's world_gradient, and world_jet with its Hessian, compiled from
+    grad() of the expression, so Tack's filters and kernels differentiate it as they do a
+    stored field; none where the expression's fields have no derivatives."""
+    try:
+        g = P._Compiler(f"grad({text})", data, "cells")
+        g.held = True
+        gradient, _ = g.parse()
+    except (P.ExprError, P._NeedCorners):
+        return "", []
+    parts.append(("G", list(g.args), list(g.consts)))
+    out = _method(P._live(g.lines, [gradient]), gradient, "G", "world_gradient", "self, cells, c, pc")
+    if order < 2:
+        return out + ("\n    @tack.func\n    def world_jet(self, cells, c, pc):\n"
+                      "        n = self.no_hessian\n"
+                      "        return self.value(c, pc), self.world_gradient(cells, c, pc), "
+                      "tack.mat3([n, n, n], [n, n, n], [n, n, n])\n"), [g]
+    rows = ", ".join(f"grad(grad({text})[{k}])" for k in range(3))
+    try:
+        h = P._Compiler("{" + rows + "}", data, "cells")
+        h.held = True
+        hessian, _ = h.parse()
+    except (P.ExprError, P._NeedCorners):
+        return out, [g]
+    parts.append(("H", list(h.args), list(h.consts)))
+    out += _method(P._live(h.lines, [hessian]), hessian, "H", "expression_hessian", "self, cells, c, pc")
+    out += ("\n    @tack.func\n    def world_jet(self, cells, c, pc):\n"
+            "        return self.value(c, pc), self.world_gradient(cells, c, pc), "
+            "self.expression_hessian(cells, c, pc)\n")
+    return out, [g, h]
 
 
 def _fields(text, data):

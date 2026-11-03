@@ -116,17 +116,30 @@ as `td.Field`s on a `td.uniform_grid`, a few lines, and expressions and Tack's f
 there. STAR-CCM+ makes the same split: the solver owns its storage, and post-processing reads field
 functions.
 
-So expressions can be Tack's one field interface on the consumer side, for filters, Catalyst, apps
-and agents. Every filter would take a `Field` or a string: a bare name returns the stored field
-unchanged, with no kernel, and any other string is an expression, the saved form of the tree the
-Python operators build. That retires the duplicate entry points, such as `fx.contour` beside
-`td.contour`.
+So field expressions are Tack's one field interface on the consumer side, for filters, Catalyst,
+apps and agents. Every filter takes a `Field` or a string: a stored field's name gives that field,
+with no kernel, and any other string is an expression, the saved form of the tree the Python
+operators build. tack-expr registers the resolver with `td.register_field_resolver`, so
+`td.contour(data, "mag(U)", 1.0)` contours an expression and `fx.contour` is gone.
+
+A field's derivatives come from whatever knows them best. By default its view differentiates its
+basis. A solver that reconstructs its own gradient passes it as a field, `td.Field(space, values,
+gradient=g)`, and `world_gradient`, `td.gradients`, `td.flow_quantities` and every expression's
+`grad`, `div`, `curl` and `qcrit` read it; tack-lbm gives velocity its central-difference Jacobian
+this way. An expression field's view gives the expression's gradient and Hessian by the chain rule,
+so Tack's filters and kernels differentiate it as they do a stored field. It compiles them only when
+something asks: `td.gradients` asks, and a kernel of your own takes `td.differentiable(field,
+order)`, or `fx.field(text, data, derivatives=1)` (2 for the Hessian too).
+
+An expression stored under a name in `data.fields` is read by name in other expressions, expanded
+into the same kernel and bound late, so it follows its inputs; one defined in terms of itself is
+refused. A filter's output has the expression again, over the fields carried there; a given gradient
+goes with its field; and `dataset_to_vtk` writes an expression field's values.
 
 The views (`u.value`, `parametric_gradient`, `world_gradient`) stay the interface on the solver and
 kernel side, and the compiler generates against them. Expressions are read-only, so writing a field
-in place, the ghost exchange of storage and I/O stay with stored fields. Whether Tack's filters
-parse strings in core, or call tack-expr when it is installed, is the open question for Tack's
-maintainers.
+in place, the ghost exchange of storage and I/O stay with stored fields. Time derivatives and
+reductions over time come next.
 
 ## Overview
 
@@ -281,8 +294,8 @@ by the geometry's unit, and a derivative of degrees Celsius is in kelvin. An unk
 guessed nor refused, and the result's unit is then unknown. `101.325[kPa]` writes a quantity, a bare
 number in a sum is in the unit of what it meets, and `units="MPa"` converts the result. Conversions
 are constant factors in the kernel, only where units meet, so kPa plus kPa stays kPa. Every entry
-point takes a dictionary and `units=`: `evaluate`, `compile_expression`, `compile_many`, `fx.field`,
-`fx.contour` and the Python operators, and the fields they make carry the result's unit.
+point takes a dictionary and `units=`: `evaluate`, `compile_expression`, `compile_many`, `fx.field`
+and the Python operators, and the fields they make carry the result's unit.
 
 **Field dictionary.** `fx.FieldDictionary` maps the names an expression uses to what a dataset
 stores, and gives units to fields stored without one. An entry finds its storage by its name or an
@@ -350,16 +363,16 @@ expressions read them as world vectors through the Piola maps, `div()` of an `HD
 `td.hdiv_div` and `curl()` of an `HCurl` field through `td.hcurl_curl`.
 
 **Expressions without storing them.** `fx.field(text, data)` is a `td.Field` computed wherever an
-algorithm reads it, and `fx.contour` contours an expression with nothing stored: each crossing is
-the expression's own root, and an expression of continuous fields gives a watertight surface. This
-needed two small Tack changes, spaces that declare themselves `evaluated` or `continuous`. An
-expression field also bounds its values in each cell, by interval arithmetic over its inputs'
-Bernstein bounds, so a subdivided contour refines only the cells whose bound holds the level.
-Arithmetic, integer powers, comparisons, `if`, `min`, `max`, `clamp`, `abs`, `sqrt`, `log`, `exp`,
-`tanh`, `atan`, `sinh`, `sin` and `cos` have rules; an expression with a derivative or another
-function has no bound and refines every cell. `test_expr_bounds.py` checks each cell's bound against
-the expression's values at order-4 nodes, and that a contour with bounds is the contour without
-them, on CPU and CUDA.
+algorithm reads it, and `td.contour(data, text, value)` contours an expression with nothing stored,
+subdivided by its inputs' largest order: each crossing is the expression's own root, and an
+expression of continuous fields gives a watertight surface. This needed two small Tack changes,
+spaces that declare themselves `evaluated` or `continuous`. An expression field also bounds its
+values in each cell, by interval arithmetic over its inputs' Bernstein bounds, so a subdivided
+contour refines only the cells whose bound holds the level. Arithmetic, integer powers, comparisons,
+`if`, `min`, `max`, `clamp`, `abs`, `sqrt`, `log`, `exp`, `tanh`, `atan`, `sinh`, `sin` and `cos`
+have rules; an expression with a derivative or another function has no bound and refines every cell.
+`test_expr_bounds.py` checks each cell's bound against the expression's values at order-4 nodes, and
+that a contour with bounds is the contour without them, on CPU and CUDA.
 
 **Pieces and continuity.** `evaluate(update_ghosts=True)` refreshes the ghost values of the fields
 an expression reads, through `td.update_ghosts`, so chained evaluations on pieces stay right on the
@@ -513,14 +526,16 @@ merged:
 | #258 `fix/vtk-char-signedness` | VTK interop reads a `vtkCharArray` as signed or unsigned by its range |
 | #259 `vis/world-hessian` | `shape_hessian`, `parametric_hessian` and `geometry_curvature`; public `world_gradient`, `world_hessian` and `world_jet` |
 | #260 `vis/hdiv-hcurl` | the `HDiv` and `HCurl` spaces |
+| `vis/field-derivatives`, not yet proposed | `Field(..., gradient=)`; `world_gradient` and `world_jet` from the field's view; `register_field_resolver`; `differentiable`; filters carrying given gradients and making evaluated fields again; `dataset_to_vtk` of evaluated fields; a space's `default_subdivision` |
 | `packages/tack-expr` on `field-expression-support` | the compiler, derivatives (of tensors too), `compile_many`, expression fields with bounds and their contours, ghost refresh, the Python operators, units on every entry point, the field dictionary, tensors and complex values (a complex result as two fields); tests, examples and this document. The contour hook for evaluated and continuous spaces is here too, not yet proposed. |
 
 The next steps:
 
-1. **tack-expr as a pull request**, with the contour hook for evaluated and continuous spaces.
-2. **Vector spaces above order 1 on tetrahedra**, with face and interior moments in barycentric
+1. **The field interface as a pull request**: `vis/field-derivatives` to Tack's main.
+2. **tack-expr as a pull request**, with the contour hook for evaluated and continuous spaces.
+3. **Vector spaces above order 1 on tetrahedra**, with face and interior moments in barycentric
    bases.
-3. **Every rank in the ghost exchange.** A rank that owns no pieces skips the `td.update_ghosts`
+4. **Every rank in the ghost exchange.** A rank that owns no pieces skips the `td.update_ghosts`
    call that `update_ghosts=True` makes, because it names the fields from a local piece; naming them
    from the dataset's field names would keep every rank in the exchange. Tack tests the exchange
    itself across ranks.

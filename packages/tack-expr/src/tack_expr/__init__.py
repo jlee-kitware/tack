@@ -1,8 +1,10 @@
 """Field expressions for Tack: VTK calculator syntax over tack.dataset fields, and the same
 expressions written with Python operators on td.Fields."""
 
+import tack.dataset as _td
+
 from .dictionary import Entry, FieldDictionary, cgns
-from .lazy import contour, field
+from .lazy import field
 from .ops import (
     Expr,
     arg,
@@ -60,8 +62,17 @@ from .parser import (
 )
 
 __all__ = ["Compiled", "Entry", "Expr", "ExprError", "FieldDictionary", "Function", "arg",
-           "cells", "cgns", "clamp", "clear_cache", "compile_expression", "compile_many", "conj", "contour",
+           "cells", "cgns", "clamp", "clear_cache", "compile_expression", "compile_many", "conj",
            "coords", "cross", "curl", "ddot", "det", "dev", "div", "dot", "eigvals", "evaluate", "evaluate_complex", "field", "for_each", "fsum", "function",
            "grad", "identity", "imag", "inv", "laplacian", "mag", "mag2", "maximum", "minimum", "neighbor", "norm", "outer", "owner",
            "phase", "pi", "points", "qcrit", "real", "ref", "skew", "sym", "trace",
            "transpose", "vec", "vonmises", "where"]
+
+
+def _resolve(data, text):
+    # A name is the dataset's own (a missing one stays a KeyError); other text is an expression.
+    return None if text.isidentifier() else field(text, data)
+
+
+if hasattr(_td, "register_field_resolver"):
+    _td.register_field_resolver(_resolve)

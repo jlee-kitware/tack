@@ -201,15 +201,31 @@ of a velocity field on a 192 x 64 x 32 grid take 0.20 ms this way, 0.62 ms as fo
 ## Without storing it
 
 `fx.field(expression, data)` is a `td.Field` that computes the expression wherever an algorithm
-reads it, through its view's `value` and `corner_value`; nothing is stored. `td.contour` takes it
-as it takes a stored field, and `fx.contour(expression, data, value)` does so with the subdivision
-its inputs' order calls for. Each crossing is the expression's own root along its sub-edge, and an
+reads it, through its view's `value` and `corner_value`; nothing is stored. Tack's algorithms
+take it as they take a stored field, or the expression's text where a field goes:
+`td.contour(data, "mag(U)", 1.0)` subdivides by its inputs' largest order. Each crossing is the expression's own root along its sub-edge, and an
 expression of continuous fields shares its points between cells, so its surface is watertight.
 An expression field bounds its values in each cell by interval arithmetic over its inputs'
 Bernstein bounds, so a subdivided contour refines only the cells that can hold the level; an
 expression with a derivative, or a function with no interval rule, refines every cell.
 `tests/test_expr_bounds.py` checks the bounds.
 `tests/test_expr_contour.py` compares with contours of stored fields and with the exact level.
+
+## Stored under a name
+
+`data.fields["speed"] = fx.field("mag(U)", data)` stores an expression by name. Other expressions
+read `speed` as a field: it expands into their kernel and follows `U`. One defined in terms of
+itself is refused. Filters make it again on their output, over the fields carried there, and
+`dataset_to_vtk` writes its values. Tack's filters and kernels differentiate it as they do a stored
+field. Its derivatives are compiled when something asks for them: `td.gradients`
+does, and a kernel of your own takes `td.differentiable(field, order)`.
+
+## A solver's own gradient
+
+`td.Field(space, values, gradient=g)` gives a field its gradient from elsewhere, such as a solver's
+reconstruction: `g` is a field on the same topology, 3 values per entry for a scalar, 9 row by row
+for a 3-vector. `grad`, `div`, `curl` and `qcrit` read it, and so do `td.gradients` and
+`td.flow_quantities`. Second derivatives of such a field are refused.
 
 ## In other kernels
 

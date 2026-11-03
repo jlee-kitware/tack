@@ -106,8 +106,8 @@ def test_compile_many_takes_expressions_and_text(data):
 def test_lazy_fields_and_contours(data):
     T, U, _, _ = fields(data)
     expr = T * T + fx.mag2(U) * 0.1
-    surface = expr.contour(data, 1.0)
-    stored = fx.contour("T * T + mag2(U) * 0.1", data, 1.0)
+    surface = td.contour(data, expr.field(data), 1.0)
+    stored = td.contour(data, "T * T + mag2(U) * 0.1", 1.0)
     assert (surface.num_cells, surface.num_points) == (stored.num_cells, stored.num_points)
     f = expr.field(data)
     assert f.space.continuous

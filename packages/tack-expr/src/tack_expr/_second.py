@@ -180,10 +180,17 @@ class Second:
             if key not in p.loaded:
                 k = len(p.loaded)
                 p.loaded[key] = (f"a{k}", f"g{k}", f"h{k}")
-                p.lines.append(f"a{k}, g{k}, h{k} = ad.world_jet(dom, {u}, c, {pc})")
+                if p.held:
+                    p.uses_held = True
+                    p.lines += [f"a{k}, pgj{k}, phj{k} = {u}.parametric_jet(c, {pc})",
+                                f"jj{k} = dom.geometry_jacobian(c, {pc})",
+                                f"g{k} = held_gradient(jj{k}, pgj{k}, dom.DIMENSION)",
+                                f"h{k} = held_hessian(jj{k}, phj{k} - dom.geometry_curvature(c, {pc}, g{k}), dom.DIMENSION)"]
+                else:
+                    p.lines.append(f"a{k}, g{k}, h{k} = ad.world_jet(dom, {u}, c, {pc})")
             return p.loaded[key]
         v = p.load(f"value:{name}", f"{u}.value(c, {pc})", S)[0]
-        g = p.load(f"grad:{name}", f"_world_gradient(dom, {u}, c, {pc})", V)[0]
+        g = p.load(f"grad:{name}", p.world_gradient(u, field, pc), V)[0]
         H = p.load(f"hess:{name}", f"ad.world_hessian(dom, {u}, c, {pc})", V)[0]
         return (v, g, H)
 
@@ -196,6 +203,8 @@ class Second:
         value, t = p.field(name, pos)
         if t == P.M:
             p.error("second derivatives of tensor fields are not implemented", pos)
+        if getattr(field, "gradient", None) is not None:
+            p.error(f"'{name}' was given its gradient, not its second derivatives", pos)
         constant = kind == "values-cells" or isinstance(field.space, P.td.Constant)
         if kind != "basis" or constant:
             if t == S:
