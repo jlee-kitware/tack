@@ -122,6 +122,7 @@ def field(text, data, fields=None, units=None, derivatives=0):
 
 def _field(text, data, derivatives=0):
     c = P._Compiler(text, data, "cells")
+    c.held = True
     result, rtype = c.parse()
     if rtype != P.S:
         raise P.ExprError("a field to contour or clip is a scalar expression", 0, text)
@@ -131,6 +132,7 @@ def _field(text, data, derivatives=0):
     continuous = False
     try:
         k = P._Compiler(text, data, "corners")
+        k.held = True
         corner, _ = k.parse()
         parts.append(("B", list(k.args), list(k.consts)))
         head = ["pc = self.dom.parametric_point(j)"] if k.uses_pc else []
