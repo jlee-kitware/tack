@@ -73,8 +73,14 @@ __all__ = ["Compiled", "Entry", "Expr", "ExprError", "FieldDictionary", "Functio
 
 
 def _resolve(data, text):
-    # A name is the dataset's own (a missing one stays a KeyError); other text is an expression.
-    return None if text.isidentifier() else field(text, data)
+    # Text that names no stored field is an expression (V_X, coordsX, mag(U)); a bare
+    # name that is not one either stays the dataset's KeyError.
+    try:
+        return field(text, data)
+    except ExprError:
+        if text.isidentifier():
+            return None
+        raise
 
 
 if hasattr(_td, "register_field_resolver"):

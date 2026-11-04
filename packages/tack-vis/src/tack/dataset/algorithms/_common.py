@@ -140,6 +140,37 @@ def _same_space(*fields):
 
 
 _RESOLVERS = []
+_DERIVED = {}
+
+
+def register_derived_field(name, compute):
+    """Lets ``name`` stand for a field a dataset makes from itself when it stores none
+    of that name: ``compute(data)`` gives a ``Field`` on ``data``, made the first
+    time it is asked for and kept with the dataset while its geometry is the same.
+    A stored field of the name always comes first. Tack registers the surface
+    normals (``normals``, ``cell_normals``) and each cell's measure and centroid
+    (``cell_measures``, ``cell_centroids``)."""
+    _DERIVED[name] = compute
+
+
+def derived_names():
+    """The names ``register_derived_field`` has registered."""
+    return tuple(_DERIVED)
+
+
+def named_field(data, name):
+    """The field ``name`` names on ``data``: the one stored under it, else the one
+    derived from the dataset (``register_derived_field``); a ``KeyError`` for
+    neither."""
+    if not isinstance(name, str) or name in data.fields or name not in _DERIVED:
+        return data.fields[name]
+    made = data.__dict__.setdefault("_derived_fields", {})
+    hit = made.get(name)
+    if hit is not None and hit[0] is data.geometry:
+        return hit[1]
+    field = _DERIVED[name](data)
+    made[name] = (data.geometry, field)
+    return field
 
 
 def register_field_resolver(resolve):
@@ -152,8 +183,8 @@ def register_field_resolver(resolve):
 
 
 def _resolved(data, text):
-    if not isinstance(text, str) or text in data.fields:
-        return data.fields[text]
+    if not isinstance(text, str) or text in data.fields or text in _DERIVED:
+        return named_field(data, text)
     for resolve in reversed(_RESOLVERS):
         field = resolve(data, text)
         if field is not None:
