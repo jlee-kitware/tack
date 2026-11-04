@@ -198,3 +198,15 @@ def test_reductions_of_an_expression_are_of_its_values(data):
     got = td.integrate(data, {"e": "T * T + 1", "f": fx.field("T * T + 1", data)}).values
     np.testing.assert_allclose([got["e"], got["f"]], exact, rtol=1e-5)
 
+
+def test_a_surface_flux_and_a_component_by_text(data):
+    data.fields["V"] = fx.evaluate("coords", data, at="points")
+    box = td.surface_normals(td.extract_surface(data))
+    flux = td.integrate(box, ["dot(V, cell_normals)"]).values["dot(V, cell_normals)"]
+    volume = td.integrate(data, ["div(V)"]).values["div(V)"]
+    np.testing.assert_allclose(flux, volume, rtol=1e-5)                 # the divergence theorem
+    np.testing.assert_allclose(td.statistics(data, "V_X").mean, _values("coordsX", data, at="points").mean(),
+                               rtol=1e-5)
+    with pytest.raises(KeyError):
+        td.statistics(data, "nosuch")
+
