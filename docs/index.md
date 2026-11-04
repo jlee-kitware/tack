@@ -1,219 +1,189 @@
-# Tack
+# What Tack is
 
-Tack is a Python framework for data-parallel computing on CPUs and GPUs. You
-write a kernel as an ordinary Python function with one parallel loop, and Tack
-compiles it when you call it, for the CPU (through LLVM), Apple Metal, NVIDIA
-CUDA, AMD HIP or Intel Level Zero. Arrays live on a device, kernels run where
-their arrays are, and **the same kernel source runs on every backend**, within
-each backend's [capabilities](contracts/backend-capabilities.md): Metal has no
-`f64`, for example, and the CPU has no workgroup primitives.
+Tack is a Python framework for parallel computing on CPUs and GPUs, and a
+toolkit for scientific data analysis and visualization built on it. You write
+a kernel as an ordinary Python function, and Tack compiles it for the device
+your arrays are on: the CPU, an Apple GPU (Metal), an NVIDIA GPU (CUDA), an
+AMD GPU (HIP) or an Intel GPU (Level Zero). The same filters, written that
+way, contour, probe and trace a simulation's data on whichever of those
+devices you have.
 
-Tack comes in two packages, and the second is built on the first:
-
-- **Tack core** (`tack-core`, the `tack` module): the kernel language, arrays and
-  devices, parallel algorithms and communication between devices and MPI ranks.
-  It is general purpose: simulations, data processing, analysis, anything you
-  would write as loops over arrays.
-- **Tack vis** (`tack-vis`, `tack.dataset` and `tack.interop`): datasets and
-  scientific visualization -- meshes, point clouds, fields and the filters over
-  them -- written as Tack kernels, with VTK, MFEM and Warp interop.
-
+<!-- tack-check: intro-saxpy -->
 ```python
-import tack, numpy as np
+import numpy as np
+import tack
 
-tack.set_default_device("cpu")          # or metal, cuda, hip, level_zero
+tack.set_default_device("cpu")          # or "metal", "cuda", "hip", "level_zero"
+
 
 @tack.kernel
-def vector_add(x, y, out):
-    for i in range(x.shape[0]):   # the outermost loop maps to thread parallelism
-        out[i] = x[i] + y[i]
+def saxpy(a, x, y, out):
+    for i in range(x.shape[0]):         # the parallel loop: one thread per i
+        out[i] = a * x[i] + y[i]
 
-n = 1_000_000
-x = tack.empty((n,))
-y = tack.empty((n,))
-out = tack.empty((n,))
-tack.copyto(x, np.arange(n, dtype=np.float32))
-tack.copyto(y, np.ones(n, dtype=np.float32))
 
-vector_add(x, y, out)
-print(out.numpy()[:4])         # [1. 2. 3. 4.]
+x = tack.array(np.arange(1_000_000, dtype=np.float32))
+y = tack.ones(1_000_000)
+out = tack.empty_like(x)                # on the same device as x
+saxpy(2.0, x, y, out)
+assert out[3] == 7.0
 ```
 
-Only the `tack.set_default_device()` line changes between backends:
+Only the first call of `saxpy` compiles; later calls reuse the compiled code.
 
-=== "CPU"
+## Where to start
 
-    ```python
-    tack.set_default_device("cpu")
-    ```
-    LLVM IR through llvmlite, dispatched with ctypes. Threads are used only
-    when a measurement says they pay — see [Backends](users-guide/08-backends.md).
-
-=== "Metal"
-
-    ```python
-    tack.set_default_device("metal")
-    ```
-    MSL compiled by the Metal API. Buffers are shared memory on Apple silicon,
-    so host and device see the same allocation.
-
-=== "CUDA"
-
-    ```python
-    tack.set_default_device("cuda")
-    ```
-    CUDA C through NVRTC to PTX, launched with `cuLaunchKernel`.
-
-=== "HIP"
-
-    ```python
-    tack.set_default_device("hip")
-    ```
-    HIP C through hipRTC. The code generator is the CUDA one with a different
-    `#include` — device syntax is shared.
-
-=== "Level Zero"
-
-    ```python
-    tack.set_default_device("level_zero")
-    ```
-    OpenCL C compiled to SPIR-V by `libocloc`, launched through Level Zero.
-
-## Tack core
-
-A kernel call goes from Python source to native code in one step: Tack reads
-the function's source, lowers it to its own intermediate representation,
-specializes it for the argument types, generates the backend's code and
-compiles it. The compiled kernel is kept in memory and on disk, so later calls,
-and later processes, skip the compilation. Around that compiler, the core has
-these parts:
-
-| Part | What it gives you | Read |
-|---|---|---|
-| **The kernel language** | `@tack.kernel` with one parallel loop; `@tack.func` device functions; control flow, math, and integer and floating-point arithmetic with defined semantics on every backend; vectors and matrices; atomics; workgroups (shared memory, barriers, block reductions) on GPUs | [Kernels](users-guide/03-kernels.md), [Control Flow and Math](users-guide/04-control-flow.md), [Device Functions](users-guide/05-device-functions.md), [Vectors and Matrices](users-guide/14-vectors-and-matrices.md), [Advanced Features](users-guide/07-advanced.md) |
-| **Templates** | `@tack.device_class` objects: data and methods that a kernel takes as an argument and compiles in, composed of other templates, so one kernel serves many data structures | [Templates](users-guide/06-templates.md) |
-| **Arrays** | typed arrays of scalars, vectors or matrices on a device, structure-of-arrays layout, implicit arrays computed from their index (`tack.arrays`), exchange with NumPy | [Arrays and Types](users-guide/02-arrays-and-types.md), [Memory and Parallel Correctness](users-guide/13-memory-and-parallelism.md) |
-| **Devices and backends** | devices as values, a default device, several GPUs, launches queued on GPUs and waited for when you read | [Backends](users-guide/08-backends.md) |
-| **Parallel algorithms** | `tack.algorithms`: reductions, scans, sorts, segmented reductions and statistics, the building blocks of data-parallel programs | [Reductions and Scans](users-guide/11-reductions-and-scans.md) |
-| **Communication** | `tack.communication`: work split into blocks over devices and MPI ranks, with exchanges, ghost plans, routing and distributed sorting | [Communicate Between Blocks](users-guide/18-communication.md) |
-| **Interoperability** | sharing memory without copies through DLPack and external pointers, with PyTorch, CuPy, Warp and VTK | [Sharing Arrays](users-guide/16-interoperability.md) |
-| **Tools** | the generated code (`tack.inspect`), bounds checks in debug mode, timing, the kernel cache | [Debugging and Timing](users-guide/15-debugging-and-timing.md), [The Kernel Cache](users-guide/17-kernel-cache.md) |
-
-The [User's Guide](users-guide/index.md) teaches these in order: start with
-[Getting Started](users-guide/01-getting-started.md) and
-[From Python to a Tack program](users-guide/12-execution-model.md), then the
-language chapters. Its [worked examples](users-guide/tutorials/index.md) are
-complete programs with independent checks: heat diffusion, dye advection,
-trail-following agents, marching squares, a particle-to-grid simulation and
-tiled N-body forces.
-
-## Tack vis: datasets and visualization
-
-Tack vis brings scientific visualization to Tack: the data model and filters
-of [VTK](https://vtk.org), written data-parallel as
-[Viskores](https://github.com/Viskores/viskores) writes them, with fields in
-function spaces as finite-element codes such as MFEM define them. Its
-algorithms -- contour, slice, clip, threshold, gradients, probes,
-streamlines, point-cloud cleaning, halo finding and many more -- are Tack
-kernels, so they run on every backend, on one dataset or on one cut into
-pieces over devices and MPI ranks. Tack draws nothing itself: results go to
-VTK and ParaView, sharing memory where they can.
-
-```python
-import tack
-import tack.dataset as td
-
-data = td.uniform_grid((17, 17, 17), origin=(-1, -1, -1), spacing=(0.125, 0.125, 0.125))
-positions = data.positions()
-values = tack.array((positions * positions).sum(axis=1), dtype=tack.f32)
-data.fields["radius_squared"] = td.Field(td.H1(data), values)
-
-surface = td.contour(data, "radius_squared", 0.5)     # a sphere of triangles
-```
-
-Using its filters needs no kernel programming. Writing your own needs the
-core's kernels and templates, because a filter of your own sees a mesh
-through the same views the built-ins use. The
-[Visualization Guide](vis-guide/index.md) goes in this order:
-
-1. **[The guide's opening page](vis-guide/index.md):** what visualization
-   does with data, and where Tack vis comes from; then the
-   [Introduction](vis-guide/introduction.md), a tour with a runnable example.
-2. **The data model:** function spaces, datasets, fields, cell types and
-   bases, physical units.
-3. **Working with data:** building meshes, point clouds, AMR and octrees,
-   the filters, [writing mesh algorithms](vis-guide/05-mesh-kernels.md) and
-   [filters of your own](vis-guide/15-write-a-filter.md), sampling and
-   connecting simulations, streaming time steps.
-4. **Data in pieces:** partitioned datasets with ghost cells, and
-   algorithms across pieces, devices and ranks.
-5. **[Examples](vis-guide/examples.md)** and the
-   [Gallery](vis-guide/gallery.md), then the reference.
-
-## Install
-
-Tack is not on PyPI yet; install it from a clone of the repository:
-
-```bash
-git clone https://github.com/berkgeveci/tack.git && cd tack
-pip install -e 'packages/tack-core[cpu]'      # Tack core: CPU only
-pip install -e 'packages/tack-core[metal]'    # ...or Apple silicon
-pip install -e 'packages/tack-core[cuda]'     # ...or NVIDIA
-pip install -e packages/tack-vis              # Tack vis, on top of the core
-```
-
-See [Backends](reference/backends.md) for what each extra pulls in and which
-scalar types each backend supports.
-
-## The documentation
+Start from what you want to do. Each path begins with one short page and then
+points to the chapters it needs.
 
 <div class="grid cards" markdown>
 
--   **[User's Guide](users-guide/index.md)**
+-   **Write GPU code in Python**
 
-    Tack core: writing kernels, arrays and types, control flow, device
-    functions, templates, atomics and shared memory, reductions and scans,
-    backends, communication and interoperability.
+    ---
 
--   **[Visualization Guide](vis-guide/index.md)**
+    Kernels, arrays and devices, from a first kernel to running it on a GPU.
 
-    Tack vis: the data model, meshes, point clouds and field spaces,
-    scientific filters, custom cell and face kernels, probing and
-    streamlines, data in pieces, and simulation pipelines.
+    [Start with the core](core/index.md) · then
+    [kernels](core/kernels.md), [choosing a device](core/choose-a-device.md)
+    and [complete examples](core/examples.md)
 
--   **[Developer's Guide](developers-guide/index.md)**
+-   **Analyze or visualize a dataset**
 
-    How a decorated function becomes machine code: the AST transform, the IR
-    and its passes, the code generators, and the runtime that caches and
-    dispatches them.
+    ---
 
--   **[Design and Implementation](design/index.md)**
+    Contour, slice, clip, probe and trace a dataset you already have. For
+    readers who know VTK or ParaView.
 
-    Why Tack is built the way it is: the principles, the compilation
-    pipeline, specialization and caching, numerical semantics, parallel
-    execution, memory and aliasing, and interoperability.
+    [Start with visualization](visualization/index.md) · then
+    [extracting parts](visualization/extract.md) and
+    [deriving quantities](visualization/derive.md). New to datasets and
+    filters? [Read the data model's first page](data/index.md) first.
 
--   **[Contracts](contracts/index.md)**
+-   **Connect a simulation's data**
 
-    What Tack promises and what callers must ensure: the kernel language
-    contract, backend capabilities, the runtime API and its errors, and how
-    conformance is tested and validated.
+    ---
 
--   **[Backends](reference/backends.md)**
+    Run filters on a simulation's own arrays, on its devices, without copies.
 
-    The capability table: codegen, runtime compiler, dispatch, buffer type
-    and supported dtypes for each backend.
+    [Start with connecting a simulation's data](data/connect-simulation-data.md)
+    · then [sharing arrays](core/share-arrays.md) and
+    [building meshes and fields](data/build-meshes-and-fields.md)
 
--   **[API](reference/api.md)**
+-   **Scale across devices or MPI ranks**
 
-    The public surface, generated from the source.
+    ---
+
+    Data in pieces, with ghost cells and global ids, over several GPUs or MPI
+    ranks.
+
+    [Start with data in pieces](data/pieces.md) · then
+    [filters over pieces](visualization/over-pieces.md) and
+    [communication](communication/index.md)
 
 </div>
 
-## What Tack is not
+[Use cases](use-cases.md) shows these at more length, with the pages that
+show how.
 
-It is not a drop-in NumPy replacement and not an autograd framework. Kernels
-are written in a restricted subset of Python that is read as source and
-compiled — the [User's Guide](users-guide/03-kernels.md) covers what that
-subset includes. And it is not a renderer: Tack vis computes what is drawn,
-and VTK or ParaView draws it.
+## How Tack is built
+
+Tack is four layers, each using only the layers below it. The guide describes
+them in that order, but it is not a course: start where your path starts, and
+follow its links down when you need them.
+
+```mermaid
+flowchart TB
+    subgraph tack["Tack"]
+        direction TB
+        vis["<b>Visualization</b><br/>filters and analysis"]
+        data["<b>Data</b><br/>meshes, fields, particles, AMR, pieces"]
+        comm["<b>Communication</b><br/>blocks over devices and MPI ranks"]
+        core["<b>Core</b><br/>kernels, arrays, devices"]
+        vis -->|uses| data -->|uses| comm -->|uses| core
+    end
+    core --> hw["CPU · Apple Metal · NVIDIA CUDA · AMD HIP · Intel Level Zero"]
+    sim["Simulation codes, PyTorch, CuPy, Warp"] <-->|"arrays, shared without copies"| core
+    files["Reading and writing files:<br/>VTK, MFEM"] <-->|datasets| data
+    vis -->|datasets| render["Rendering and user interfaces:<br/>VTK, ParaView, trame"]
+    classDef others stroke-dasharray: 5 5
+    class sim,files,render others
+```
+
+- **[Core](core/index.md)** (`tack`) is the programming model: kernels with one
+  parallel loop, device functions and device classes, arrays of scalars,
+  vectors and matrices, reductions, scans and sorts. Arithmetic follows one
+  [written contract](reference/language-contract.md) on every backend.
+- **[Communication](communication/index.md)** (`tack.communication`) splits
+  work into blocks, each on one device, and moves arrays between them, in one
+  process or over MPI ranks.
+- **[Data](data/index.md)** (`tack.dataset`) holds what simulations and
+  instruments produce: grids and unstructured meshes, polyhedra, curved cells
+  and fields of any order, point clouds, AMR hierarchies and octrees, and
+  datasets in pieces.
+- **[Visualization](visualization/index.md)** is about eighty filters written
+  on the layers below. They keep VTK's names and meaning, tests compare their
+  output with VTK's, and every one runs on every backend.
+
+The dashed boxes are other software. Tack reads no file formats and draws
+nothing: VTK's readers bring data in, and VTK, ParaView or a trame application
+draws what Tack computes.
+
+<div class="grid cards" markdown>
+
+-   ![Contours of polyhedra](assets/gallery/contour-polyhedra.jpg){ loading=lazy width=320 height=280 }
+
+    Polyhedra
+
+-   ![Contours of tetrahedra](assets/gallery/contour-linear.jpg){ loading=lazy width=320 height=280 }
+
+    Tetrahedra
+
+-   ![Contours of an order-4 field](assets/gallery/contour-high-order.jpg){ loading=lazy width=320 height=280 }
+
+    An order-4 field
+
+-   ![Contours on curved cells](assets/gallery/contour-curved.jpg){ loading=lazy width=320 height=280 }
+
+    Curved cells of order 3
+
+</div>
+
+These are contours of one function on four kinds of cells. The cuts curve
+inside the order-4 and curved cells, because Tack cuts the field itself rather
+than a straight line between its values at the corners
+([gallery](vis-guide/gallery.md)).
+
+## How fast it is
+
+Tack's filters are Tack kernels, and they are fast on both kinds of processor.
+On 20 million hexahedra, point gradients take 760 ms on Tack's CPU and 23 ms on
+an NVIDIA RTX 6000 Ada, against 4,228 ms for VTK on the same 28 CPU threads. On
+that GPU, Tack is ahead of Viskores' C++ on 13 of the 14 filters compared. Tack
+is not ahead everywhere: on 5 million hexahedra, VTK's contour on the CPU is
+faster. [Performance](performance.md) has the measurements.
+
+## How Tack fits with other tools
+
+| Tool | How Tack relates to it |
+|---|---|
+| VTK's filters | Tack's filters replace VTK's where Tack has them. A VTK dataset converts to a Tack dataset and back, sharing memory where it can, and many of Tack's filters also run as VTK algorithms in a VTK pipeline. VTK still reads the files and renders. |
+| Viskores | Tack takes Viskores' approach to data-parallel algorithms, written in Python instead of C++ templates. Tack also runs on Apple GPUs. |
+| ParaView and trame | They draw what Tack computes, as VTK datasets. A trame application can wait for Tack's GPU work without blocking its event loop. |
+| Simulation codes | Tack works on a simulation's own arrays, on its devices, through DLPack or a raw pointer, and over its MPI ranks. |
+| MFEM | Tack imports MFEM meshes and solutions of any order, checked against MFEM's own evaluation of them. |
+| NumPy, PyTorch, CuPy, Warp | Arrays pass both ways, through DLPack on GPUs. Tack kernels can also run on NVIDIA Warp, through a prototype backend. |
+
+## What Tack does not do
+
+Tack does not render, provide a user interface, or read and write file formats
+itself; it leaves those to VTK, ParaView and their readers. It is not a drop-in
+replacement for NumPy, and it has no automatic differentiation. Kernels are
+written in a subset of Python. Tack is not on PyPI yet, so you
+[install it](install.md) from a clone of its repository.
+
+## Where to go next
+
+- [Install](install.md) gets Tack running on your device.
+- [Where to start](#where-to-start) above picks the first page for what you
+  want to do.

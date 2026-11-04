@@ -74,6 +74,10 @@ jobs:
           python3 tools/changelog.py check
           cd tools && uv run --no-project --with pytest pytest -q
 
+      # Every source file opens with an SPDX copyright and license header.
+      - name: SPDX headers
+        run: python3 tools/spdx_headers.py check
+
   # ── Docs ───────────────────────────────────────────────────────────
   #
   # --strict makes a broken internal link or a page missing from the nav a
@@ -88,7 +92,7 @@ jobs:
   docs:
     name: docs
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v7
@@ -99,8 +103,9 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "**/uv.lock"
 
-      - name: Sync the docs extra
-        run: uv sync --extra docs
+      - name: Sync the docs and interop extras
+        # The pages' examples run VTK pipelines and read MFEM meshes.
+        run: uv sync --extra docs --extra interop
 
       - name: Check tutorial results on CPU
         run: uv run python docs/examples/validate.py --arch cpu
@@ -349,6 +354,52 @@ jobs:
           uv run pytest -q --ids=i64 packages/tack-vis/tests/test_warp_interop.py
           packages/tack-vis/tests/test_simdata_interop.py
 
+  # ── VTK master ─────────────────────────────────────────────────────
+  # The VTK interop's tests against VTK master's nightly wheel
+  # (wheels.vtk.org), the VTK the interop targets; the other jobs hold it to
+  # the 9.7.1 wheel, its fallback (copies where 9.7.1 has no device arrays).
+  # VTK's own breakage on master must not block a merge, so a failure here
+  # warns (an annotation on the run) rather than failing the job.
+  vtk-master:
+    name: VTK master
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+          python-version: "3.13"
+
+      - name: Sync the workspace, with the interop extra
+        run: uv sync --extra cpu --extra dev --extra interop
+
+      - name: Install VTK master's nightly wheel
+        run: |
+          uv pip install --pre --upgrade --extra-index-url https://wheels.vtk.org vtk
+          uv run --no-sync python -c "from vtkmodules.vtkCommonCore import vtkVersion; print(vtkVersion.GetVTKVersionFull())"
+
+      - name: Run the VTK tests
+        id: vtk-tests
+        continue-on-error: true
+        run: >-
+          uv run --no-sync pytest -q -rs -n auto
+          packages/tack-vis/tests/test_vtk_interop.py
+          packages/tack-vis/tests/test_vtk_polydata.py
+          packages/tack-vis/tests/test_vtk_shared.py
+          packages/tack-vis/tests/test_vtk_shared_device.py
+          packages/tack-vis/tests/test_vtk_algorithms.py
+          packages/tack-vis/tests/test_vtk_higher_order.py
+          packages/tack-vis/tests/test_vtk_cell_grid.py
+
+      - name: Warn when VTK master fails
+        if: steps.vtk-tests.outcome == 'failure'
+        run: echo "::warning title=VTK master::the VTK tests fail against VTK master's nightly wheel; see the 'Run the VTK tests' step"
+
   # ── MPI ────────────────────────────────────────────────────────────
   # tack.communication across ranks: its cases under `mpiexec -n 3`,
   # host-staged and GPU-aware (CPU arrays handed to MPI through DLPack), a
@@ -377,8 +428,8 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "**/uv.lock"
 
-      - name: Sync the workspace
-        run: uv sync --extra cpu --extra dev --extra mpi
+      - name: Sync the workspace, with VTK for its algorithms across ranks
+        run: uv sync --extra cpu --extra dev --extra mpi --extra interop
 
       - name: Run the communication tests
         run: >-
@@ -391,6 +442,13 @@ jobs:
           packages/tack-vis/tests/test_probe_pieces.py
           packages/tack-vis/tests/test_connected_components.py
           packages/tack-vis/tests/test_merge_pieces.py
+
+      # VTK's wheel has no MPI, so the world is given (an mpi4py communicator);
+      # taking it from VTK's controller is tested where VTK is built with MPI.
+      - name: Run Tack's VTK algorithms across ranks
+        run: >-
+          uv run pytest -q -rs packages/tack-vis/tests/test_vtk_algorithms.py
+          -k "mpi or world"
 
   # ── Packaging gate ─────────────────────────────────────────────────
   # tack-core's [cuda]/[metal]/[hip]/[level_zero] extras deliberately do not

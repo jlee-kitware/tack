@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Expressions read and written in each kind of space: higher-order nodes, faces, H1
 targets, and the HDiv and HCurl vector spaces."""
 

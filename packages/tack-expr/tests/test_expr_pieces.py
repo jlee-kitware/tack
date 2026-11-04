@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Expressions on pieces with a ghost layer: what each piece owns is the whole's, and chained
 evaluations refresh the ghosts between them when asked."""
 

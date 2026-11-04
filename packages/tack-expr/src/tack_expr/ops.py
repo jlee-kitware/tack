@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Field expressions written with Python operators: ``(U + V / curl(W)).eval(data)``.
 
 Arithmetic, comparisons and NumPy's ufuncs on td.Fields and on the expressions they make

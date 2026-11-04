@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Compile VTK array calculator expressions over tack.dataset fields to Tack kernels.
 
 An expression is evaluated at an output location:

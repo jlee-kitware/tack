@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Forward-mode derivatives for grad(), div(), curl() and qcrit() of an expression.
 
 The argument is compiled into the same kernel as its value, and every value carries

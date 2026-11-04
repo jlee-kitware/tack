@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """50 -- Field expressions: VTK calculator syntax over tack.dataset fields.
 
 A velocity field whose answers are known exactly -- a rigid rotation about the z axis with an

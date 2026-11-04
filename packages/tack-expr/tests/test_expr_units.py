@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Units, the field dictionary and complex values, handled on the expression's tree before
 code generation, so the kernels compute over real fields with the conversions in place.
 Units are Tack's: Field.unit, DataSet.unit and tack.dataset.units."""

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """``statistics``: descriptive statistics of a scalar field's values, as Viskores' Statistics filter gives them: a ``Statistics`` (a NamedTuple) of ``n``, ``min``, ``max``, ``sum``, ``mean``, the central moment sums ``m2``, ``m3``, ``m4``, ``sample_variance`` (``m2 / (n - 1)``), ``population_variance`` (``m2 / n``), their standard deviations, ``skewness`` (``sqrt(n) m3 / m2^1.5``) and ``kurtosis`` (``n m4 / m2^2``, not the excess), the last two 0 for a constant field. Moments are taken about the mean, in a second pass."""
 
 import math
@@ -7,7 +10,7 @@ import numpy as np
 
 import tack
 from tack.arrays import size_of, width_of
-from tack.dataset.algorithms._common import _converted, _field, _floating_dtype
+from tack.dataset.algorithms._common import _converted, _field, _floating_dtype, _stored_field
 from tack.dataset.ghosts import owned_values
 from tack.dataset.partitioned import PartitionedDataSet, fields_of
 from tack.runtime.dispatch import on_inputs_device
@@ -104,7 +107,7 @@ def _moments(data, field, weights=None):
     over the values it owns (not its ghosts), the moments about their own mean
     in a second pass, weighted by ``weights`` (``W`` their sum, ``W2`` the sum of
     their squares; both ``n`` without); ``None`` for no values."""
-    field = _field(data, field)
+    field = _stored_field(data, field)
     if width_of(field.values):
         raise TypeError("statistics takes a scalar field")
     source = owned_values(data, field)
@@ -130,12 +133,13 @@ def _weights(data, field, weights):
     from tack.dataset.algorithms.cell_geometry import cell_geometry
     from tack.dataset.algorithms.ghost_cells import _kind
 
+    field = _stored_field(data, field)
     kind = _kind(field)
     if isinstance(weights, str) and weights == "volume":
         if kind != "cells":
             raise TypeError("volume weights are a cell's measure: they take a cell field")
         return cell_geometry(data).measure
-    weights = _field(data, weights)
+    weights = _stored_field(data, weights)
     if _kind(weights) != kind or width_of(weights.values):
         raise TypeError("weights are a scalar field on the same entities as the field "
                         "(points or cells), or \"volume\"")

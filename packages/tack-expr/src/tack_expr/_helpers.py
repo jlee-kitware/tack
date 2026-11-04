@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Pre-pass kernels: one component of a vector array, and the cell of each point link."""
 
 import tack

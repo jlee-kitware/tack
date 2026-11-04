@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Contours of expressions evaluated where the contour reads them, with nothing stored."""
 
 import numpy as np

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Second derivatives: each scalar carries its value, gradient and Hessian through the
 kernel; a vector is carried as its three components. grad() of an expression inside a
 derivative uses this pass, so its Jacobian is the expression's Hessian, and laplacian()

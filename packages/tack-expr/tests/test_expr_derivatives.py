@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """First derivatives of expressions, against float64 central differences of the exact fields
 and against td.gradients and td.flow_quantities.
 

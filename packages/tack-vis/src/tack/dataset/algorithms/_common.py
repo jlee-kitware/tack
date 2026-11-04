@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Small helpers every algorithm shares: fields by name or object, new
 fields of values, compaction of 0/1 flags into ids, closing offsets."""
 
@@ -170,6 +173,15 @@ def _field(data, field):
     if field.space.topology is not data.topology:
         raise ValueError("a field argument belongs to another topology")
     return field
+
+
+def _stored_field(data, field):
+    """``_field``, with a field evaluated where it is read (an expression's) replaced
+    by its values, as its space's ``stored`` gives them: for an algorithm that
+    reduces a field's values rather than reading it through its view."""
+    field = _field(data, field)
+    stored = getattr(field.space, "stored", None)
+    return stored(field, data) if callable(stored) else field
 
 
 def _with_basis(data, field):

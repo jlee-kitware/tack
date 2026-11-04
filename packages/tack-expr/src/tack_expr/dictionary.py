@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """A field dictionary: the names expressions use, mapped to the arrays a dataset stores.
 
 Each entry is a quantity with a name, aliases and the unit its values are stored in. Bound to

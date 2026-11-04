@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """tack_expr against VTK: vtkArrayCalculator's syntax, VTK's conversions between points and
 cells, tetrahedra, polyhedra, float64 and invalid values."""
 

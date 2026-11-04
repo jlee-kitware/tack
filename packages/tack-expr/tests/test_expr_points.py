@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """points() of cell data, averaged inside the kernel on every mesh kind, against td.project
 and VTK."""
 

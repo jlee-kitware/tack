@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """An expression as a field evaluated where an algorithm reads it, never stored.
 
 fx.field(text, data) is a td.Field whose view computes the expression at each point an

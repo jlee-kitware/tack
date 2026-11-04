@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """``integrate``: the measure of a dataset and the integrals of its fields over it, by
 quadrature in each cell's reference element through its own map -- curved cells and
 fields of any order exactly, to rounding (VTK's vtkIntegrateAttributes)."""
@@ -10,7 +13,8 @@ import numpy as np
 import tack
 from tack import arrays
 from tack.dataset import shapes, units
-from tack.dataset.algorithms._common import _field, _with_basis
+from tack.dataset.algorithms._common import _with_basis
+from tack.dataset.algorithms.cell_geometry import _signed_twice_area
 from tack.dataset.dataset import Field, is_field_key
 from tack.dataset.spaces import H1, L2, Constant, Values
 from tack.runtime.dispatch import on_inputs_device
@@ -126,7 +130,11 @@ def _polyhedron_integrals(cells, u, out):
 @tack.kernel
 def _polygon_integrals(cells, u, out):
     # Linear on the triangles fanning a polygon from its points' mean: each one's
-    # area along the polygon's normal (Newell's) times its corners' mean value.
+    # own area (signed by the polygon's normal, Newell's, so a planar polygon not
+    # star-shaped from its mean cancels as it should) times its corners' mean
+    # value. A non-planar polygon is that fan, as Tack interpolates and locates in
+    # it, not its projection onto the normal, which measured a contour's wrinkled
+    # free surface 1% small.
     for c in cells:
         origin = cells.side_position(c, 0, 0)
         n = origin - origin
@@ -146,8 +154,9 @@ def _polygon_integrals(cells, u, out):
         for k in range(cells.num_faces(c)):
             a = cells.side_position(c, k, 0) - origin - xc
             b = cells.side_position(c, k, 1) - origin - xc
-            total += a.cross(b).dot(unit) * (uc + u[cells.side_point_id(c, k, 0)]
-                                             + u[cells.side_point_id(c, k, 1)])
+            twice = _signed_twice_area(a, b, unit)
+            total += twice * (uc + u[cells.side_point_id(c, k, 0)]
+                              + u[cells.side_point_id(c, k, 1)])
         out[cells.entity_id(c)] = total / 6.0
 
 
@@ -197,7 +206,10 @@ def quadrature(shape, n):
 
 
 def _order(space):
-    """The polynomial order a space's values carry along an axis."""
+    """The polynomial order a space's values carry along an axis: for one evaluated
+    where it is read, twice its inputs' (a product of two)."""
+    if getattr(space, "evaluated", False):
+        return 2 * int(getattr(space, "default_subdivision", 1))
     if isinstance(space, (Constant, Values)):
         return 0 if isinstance(space, Constant) or space.on == "cells" else 1
     return max(int(getattr(space, "order", 1)), 0)
@@ -216,6 +228,17 @@ def _tables(data, shape, n):
 
 
 _TENSOR = (shapes.Line, shapes.Pixel, shapes.Quad, shapes.Voxel, shapes.Hexahedron)
+
+#: Gauss points an axis on a quad, at least: a quad out of plane has an area element
+#: (|J0 x J1|, a square root) no rule integrates exactly; four points an axis give
+#: its bilinear patch's area within rounding unless it is twisted far out of plane
+#: (a saddle of unit height on a unit square: 6e-5).
+_QUAD_POINTS = 4
+
+
+def _per_axis(shape, n):
+    """``n`` points an axis, or ``_QUAD_POINTS`` on a quad if more."""
+    return max(n, _QUAD_POINTS) if shape is shapes.Quad else n
 
 
 def _points_per_axis(data, field_order, shape=None):
@@ -239,10 +262,12 @@ def cell_measures(data, n=None):
     vec = tack.vec(3, data.dtype)
     measures = tack.empty((data.num_cells,), data.dtype)
     centroids = tack.empty((data.num_cells,), vec)
+    given = n
     n = _points_per_axis(data, 0) if n is None else n
     for group in data.launch_groups("cells", []):
         if group.count:
-            _cell_measures(data.domain_view("cells", group), *_tables(data, group.shape, n),
+            m = n if given is not None else _per_axis(group.shape, n)
+            _cell_measures(data.domain_view("cells", group), *_tables(data, group.shape, m),
                            measures, centroids)
     return measures, centroids
 
@@ -258,7 +283,7 @@ def _cell_values(data, field):
     for group in data.launch_groups("cells", [field]):
         if group.count and group.shape.DIMENSION == top:
             _cell_integrals(data.domain_view("cells", group), field.view(group),
-                            *_tables(data, group.shape, n), out)
+                            *_tables(data, group.shape, _per_axis(group.shape, n)), out)
     return out
 
 
@@ -290,17 +315,23 @@ def _no_reference_values(data, field):
 
 
 def _piece(data, names):
-    """One dataset's owned cells' measure and integrals, summed in cell order (f64)."""
+    """One dataset's owned cells' measure and integrals, summed in cell order (f64):
+    ``names`` as ``_names`` gives them."""
+    from tack.dataset.algorithms._common import _field
     from tack.dataset.algorithms.cell_geometry import cell_geometry
     from tack.dataset.ghosts import owned_values, visible
 
+    given = data
     data = visible(data)
     measures = Field(Values(data, "cells"), _top_cells(data, arrays.materialize(
         cell_geometry(data).measure.values)))
     measure = float(np.sum(np.asarray(owned_values(data, measures).numpy(), np.float64)))
     values = {}
-    for name in names:
-        field = data.fields[name]
+    for name, spec in names:
+        field = visible(given, spec)[1] if isinstance(spec, Field) else _field(data, spec)
+        stored = getattr(field.space, "stored", None)
+        if callable(stored) and not getattr(data.topology, "reference_cells", True):
+            field = stored(field, data)
         if not getattr(data.topology, "reference_cells", True):
             space = _with_basis(data, field).space
             if _on_points(space):
@@ -353,29 +384,51 @@ def integrate(data, fields=None):
 
         pieces = list(data)
         names = _names(pieces[0], fields) if pieces else []
+        if any(isinstance(spec, Field) for _, spec in names):
+            raise TypeError("integrate over a PartitionedDataSet takes fields by name or "
+                            "text: a Field belongs to one partition's topology")
         parts = _over_pieces(data, lambda piece: _piece(piece, names))
         measure = math.fsum(m for m, _ in parts)
-        values = {name: np.sum([v[name] for _, v in parts], axis=0) for name in names}
+        values = {name: np.sum([v[name] for _, v in parts], axis=0) for name, _ in names}
         first = pieces[0] if pieces else None
     else:
         names = _names(data, fields)
         measure, values = _piece(data, names)
         first = data
-    out_units = {name: units.derived((first.fields[name].unit, 1),
+    out_units = {name: units.derived((_unit_of(first, spec), 1),
                                      (_measure_unit(first), 1)) if first is not None else None
-                 for name in names}
+                 for name, spec in names}
     return Integrals(measure=measure, measure_unit=_measure_unit(first) if first else None,
                      values={name: (float(v) if np.ndim(v) == 0 else tuple(map(float, v)))
                              for name, v in values.items()},
                      units=out_units)
 
 
+def _unit_of(data, spec):
+    from tack.dataset.algorithms._common import _field
+
+    return spec.unit if isinstance(spec, Field) else _field(data, spec).unit
+
+
 def _names(data, fields):
+    """``[(name, spec)]``: every stored field with a basis or on the cells (and every
+    one evaluated where it is read) by default; or the names, or text a
+    registered resolver reads, each its own name; or a mapping of names to any
+    of these or to ``Field``s."""
+    from tack.dataset.algorithms._common import _field
+
     if fields is None:
-        return [name for name, field in data.fields.items()
+        return [(name, name) for name, field in data.fields.items()
                 if isinstance(field.space, (H1, L2, Constant))
+                or getattr(field.space, "evaluated", False)
                 or (isinstance(field.space, Values) and field.space.on in ("points", "cells"))]
-    names = [fields] if is_field_key(fields) else list(fields)
-    for name in names:
-        _field(data, name)
+    if hasattr(fields, "items"):
+        names = list(fields.items())
+    else:
+        entries = [fields] if is_field_key(fields) or isinstance(fields, Field) else list(fields)
+        if any(isinstance(e, Field) for e in entries):
+            raise TypeError("integrate names each Field it is given: pass {name: field}")
+        names = [(e, e) for e in entries]
+    for _, spec in names:
+        _field(data, spec)
     return names

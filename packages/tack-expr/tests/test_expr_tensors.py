@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Rank-2 tensors: fields stored as mat3 or as 9 or 6 symmetric components, the velocity
 gradient, and the tensor functions, against NumPy."""
 

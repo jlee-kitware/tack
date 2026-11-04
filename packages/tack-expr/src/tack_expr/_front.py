@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """The expression as a tree before code generation: names bound through a field dictionary,
 complex values split into real and imaginary parts, and units checked and converted.
 
