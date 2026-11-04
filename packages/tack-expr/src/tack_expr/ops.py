@@ -167,12 +167,12 @@ class Expr:
         compiled.unit = unit
         return compiled
 
-    def field(self, data, fields=None, units=None, derivatives=0):
+    def field(self, data, fields=None, units=None):
         """A td.Field computed wherever an algorithm reads it, stored nowhere; its unit the
         expression's."""
         text, names, unit = self._prepare(data, fields, units)
         with P.bound(names):
-            f = lazy.field(text, data, derivatives=derivatives)
+            f = lazy.field(text, data)
         return td.Field(f.space, f.values, unit) if unit is not None else f
 
     def function(self, data, at="cells", fields=None, units=None):

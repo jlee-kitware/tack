@@ -217,9 +217,7 @@ expression with a derivative, or a function with no interval rule, refines every
 read `speed` as a field: it expands into their kernel and follows `U`. One defined in terms of
 itself is refused. Filters make it again on their output, over the fields carried there, and
 `dataset_to_vtk` writes its values. Tack's filters and kernels differentiate it as they do a stored
-field. Its derivatives are compiled when something asks for them: `td.gradients`
-does, and a kernel of your own takes `td.differentiable(field, order)`. A kernel given one without
-them is refused with that advice.
+field.
 
 ## A solver's own gradient
 
