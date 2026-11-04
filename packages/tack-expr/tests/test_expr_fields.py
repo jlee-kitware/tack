@@ -132,6 +132,24 @@ def test_filters_differentiate_an_expression_field(data):
                                rtol=1e-4, atol=1e-4)
 
 
+@tack.kernel
+def _gradients_of(cells, u, out):
+    for c in cells:
+        out[cells.entity_id(c)] = td.world_gradient(cells, u, c, cells.parametric_center())
+
+
+def test_a_kernel_differentiating_an_expression_field_is_told_how_to_ask(data):
+    f = fx.field("T * T", data)
+    out = tack.zeros((data.num_cells,), tack.vec3(tack.f32))
+    with pytest.raises(ValueError, match=r"differentiable\(field\)"):
+        td.for_each(_gradients_of, data, "cells", f, out)
+    group = next(g for g in data.launch_groups("cells", [f]) if g.count)
+    with pytest.raises(ValueError, match=r"differentiable\(field\)"):
+        _gradients_of(data.domain_view("cells", group), f.view(group), out)
+    td.for_each(_gradients_of, data, "cells", td.differentiable(f), out)
+    np.testing.assert_allclose(out.numpy(), _values("grad(T * T)", data), rtol=1e-4, atol=1e-5)
+
+
 def test_an_expression_field_compiles_derivatives_when_asked(data):
     f = fx.field("T * T + 1", data)
     assert "world_gradient" not in f.space.source

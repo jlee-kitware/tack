@@ -129,7 +129,8 @@ gradient=g)`, and `world_gradient`, `td.gradients`, `td.flow_quantities` and eve
 this way. An expression field's view gives the expression's gradient and Hessian by the chain rule,
 so Tack's filters and kernels differentiate it as they do a stored field. It compiles them only when
 something asks: `td.gradients` asks, and a kernel of your own takes `td.differentiable(field,
-order)`, or `fx.field(text, data, derivatives=1)` (2 for the Hessian too).
+order)`, or `fx.field(text, data, derivatives=1)` (2 for the Hessian too). A kernel that
+differentiates one not asked says so, naming `td.differentiable`.
 
 An expression stored under a name in `data.fields` is read by name in other expressions, expanded
 into the same kernel and bound late, so it follows its inputs; one defined in terms of itself is
