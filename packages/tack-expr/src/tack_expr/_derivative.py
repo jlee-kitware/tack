@@ -164,13 +164,13 @@ class Derivative:
         p.uses_world_gradient = True
         if t == S:
             u = p.arg("field", name, p.by_name(name))
-            return value, S, p.load(f"grad:{name}", p.world_gradient(u, field, pc), V)[0]
+            return value, S, p.load(f"grad:{name}", p.world_gradient(u, pc), V)[0]
         whole = p.by_name(name)
         parts = p.once(f"components:{name}", lambda d, m: P._components(whole(d, m)))
         rows = []
         for k in range(3):
             u = p.arg("field", f"{name}#{k}", lambda d, m, k=k: parts(d, m)[k])
-            rows.append(p.load(f"grad:{name}#{k}", p.world_gradient(u, field, pc), V)[0])
+            rows.append(p.load(f"grad:{name}#{k}", p.world_gradient(u, pc), V)[0])
         return value, V, p.load(f"jac:{name}", f"tack.mat3({', '.join(rows)})", V)[0]
 
     def args_list(self, close):

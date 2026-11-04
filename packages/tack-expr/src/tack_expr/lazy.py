@@ -130,7 +130,6 @@ def _ask_for_derivatives(name):
 
 def _field(text, data, derivatives=0):
     c = P._Compiler(text, data, "cells")
-    c.held = True
     result, rtype = c.parse()
     if rtype != P.S:
         raise P.ExprError("a field to contour or clip is a scalar expression", 0, text)
@@ -140,7 +139,6 @@ def _field(text, data, derivatives=0):
     continuous = False
     try:
         k = P._Compiler(text, data, "corners")
-        k.held = True
         corner, _ = k.parse()
         parts.append(("B", list(k.args), list(k.consts)))
         head = ["pc = self.dom.parametric_point(j)"] if k.uses_pc else []
@@ -192,7 +190,6 @@ def _derivative_methods(text, data, parts, order=2):
     stored field; none where the expression's fields have no derivatives."""
     try:
         g = P._Compiler(f"grad({text})", data, "cells")
-        g.held = True
         gradient, _ = g.parse()
     except (P.ExprError, P._NeedCorners):
         return "", []
@@ -206,7 +203,6 @@ def _derivative_methods(text, data, parts, order=2):
     rows = ", ".join(f"grad(grad({text})[{k}])" for k in range(3))
     try:
         h = P._Compiler("{" + rows + "}", data, "cells")
-        h.held = True
         hessian, _ = h.parse()
     except (P.ExprError, P._NeedCorners):
         return out, [g]

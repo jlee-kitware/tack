@@ -167,8 +167,6 @@ class _Compiler:
         self.loaded = {}
         self.consts = []
         self.uses_world_gradient = False
-        self.held = False        # compiling a method of an expression field's view
-        self.uses_held = False
         self.uses_vector_spaces = False
         self.uses_derivatives = False
         self.uses_hcurl_curl = False
@@ -258,16 +256,9 @@ class _Compiler:
             return self.consts[int(code[1:])]
         return None
 
-    def world_gradient(self, u, field, pc):
-        """Code for the world gradient of field view u. Inside an expression field's view
-        the leaf's view is held, so its gradient is written out from its parts."""
-        if not self.held:
-            return f"_world_gradient(dom, {u}, c, {pc})"
-        self.uses_held = True
-        if getattr(field, "gradient", None) is not None:
-            return f"{u}.given_gradient.value(c, {pc})"
-        return (f"held_gradient(dom.geometry_jacobian(c, {pc}), {u}.parametric_gradient(c, {pc}), "
-                "dom.DIMENSION)")
+    def world_gradient(self, u, pc):
+        """Code for the world gradient of field view u, which its view gives."""
+        return f"_world_gradient(dom, {u}, c, {pc})"
 
     def load(self, key, code, t):
         if key not in self.loaded:
@@ -526,7 +517,7 @@ class _Compiler:
         out = []
         for k in range(9):
             u = self.arg("field", f"{name}#t{k}", lambda d, m, k=k: parts(d, m)[k])
-            out.append(self.load(f"grad:{name}#t{k}", self.world_gradient(u, None, pc), V)[0])
+            out.append(self.load(f"grad:{name}#t{k}", self.world_gradient(u, pc), V)[0])
         return out
 
     def gradient(self, fn, name, pos, field=None, getter=None):
@@ -568,14 +559,14 @@ class _Compiler:
             return self.load(f"div:{name}", f"tack.vec3({', '.join(rows)})", V)
         if fn == "grad" and not _is_vector(field):
             u = self.arg("field", name, getter)
-            return self.load(f"grad:{name}", self.world_gradient(u, field, pc), V)
+            return self.load(f"grad:{name}", self.world_gradient(u, pc), V)
         if not _is_vector(field):
             self.error(f"{fn}() takes a vector field", pos)
         rows = []
         parts = self.once(f"components:{name}", lambda d, m, g=getter: _components(g(d, m)))
         for k in range(3):
             u = self.arg("field", f"{name}#{k}", lambda d, m, k=k: parts(d, m)[k])
-            rows.append(self.load(f"grad:{name}#{k}", self.world_gradient(u, field, pc), V)[0])
+            rows.append(self.load(f"grad:{name}#{k}", self.world_gradient(u, pc), V)[0])
         gx, gy, gz = rows   # row i: the gradient of component i
         if fn == "grad":
             return self.load(f"jac:{name}", f"tack.mat3({gx}, {gy}, {gz})", M)
@@ -1142,8 +1133,6 @@ def _imports(c):
         imports += "from tack.dataset import hcurl_curl\n"
     if c.uses_hdiv_div:
         imports += "from tack.dataset import hdiv_div\n"
-    if c.uses_held:
-        imports += "from tack_expr._held import held_gradient, held_hessian\n"
     return imports + (_GRADIENT_IMPORT if c.uses_world_gradient else "")
 
 
