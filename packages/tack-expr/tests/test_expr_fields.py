@@ -201,7 +201,8 @@ def test_reductions_of_an_expression_are_of_its_values(data):
 
 def test_a_surface_flux_and_a_component_by_text(data):
     data.fields["V"] = fx.evaluate("coords", data, at="points")
-    box = td.surface_normals(td.extract_surface(data))
+    box = td.extract_surface(data)
+    # cell_normals is derived from the surface: nothing stores it.
     flux = td.integrate(box, ["dot(V, cell_normals)"]).values["dot(V, cell_normals)"]
     volume = td.integrate(data, ["div(V)"]).values["div(V)"]
     np.testing.assert_allclose(flux, volume, rtol=1e-5)                 # the divergence theorem
@@ -209,4 +210,15 @@ def test_a_surface_flux_and_a_component_by_text(data):
                                rtol=1e-5)
     with pytest.raises(KeyError):
         td.statistics(data, "nosuch")
+
+
+def test_a_stored_field_comes_before_a_derived_one(data):
+    box = td.extract_surface(data)
+    box.fields["cell_normals"] = td.Field(td.Values(box, "cells"),
+                                          td.surface_normals(box).fields["cell_normals"].values)
+    flipped = _values("-cell_normals", box)
+    box.fields["cell_normals"] = td.Field(td.Values(box, "cells"), _vectors(flipped))
+    np.testing.assert_allclose(_values("cell_normals", box), flipped)
+    np.testing.assert_allclose(_values("mag(cell_normals)", box), 1.0, rtol=1e-6)
+    np.testing.assert_allclose(_values("cell_measures", data).sum(), 0.3 * 0.25 * 0.4 * data.num_cells, rtol=1e-5)
 

@@ -270,11 +270,13 @@ class _Binder(_Pass):
         super().__init__(text)
         self.data, self.bindings = data, bindings
         self.stored = set(data.fields.keys()) if data is not None else set()
+        self.derived = set(P.td.derived_names()) if data is not None and hasattr(P.td, "derived_names") else set()
         self.depth = 0
 
     def unit_of_stored(self, name, declared=None):
         """The field's own unit, else the one the dictionary declares for it."""
-        field = self.data.fields[name] if name in self.stored else None
+        field = (P._named_field(self.data, name) if name in self.stored or name in self.derived
+                 else None)
         if getattr(field, "unit", None) is not None:
             return field.unit
         b = self.bindings.get(name)
@@ -510,8 +512,8 @@ class _Tensors(_Pass):
         name = node.name
         if name in self.bindings:
             return self.bindings[name]
-        if self.data is not None and name in self.data.fields:
-            return self.data.fields[name]
+        if self.data is not None and (name in self.data.fields or P._derived(name)):
+            return P._named_field(self.data, name)
         return None
 
     def shape(self, node):
