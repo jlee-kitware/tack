@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Datasets: a topology, a geometry, fields on spaces, and sets.
 
 As ``docs/vis-guide/design/dataset-api.md`` §3 describes them:
@@ -904,7 +907,7 @@ class DataSet:
                 raise TypeError(f"ghost marks are a tack.dataset.ghosts.Ghosts, not "
                                 f"{type(ghosts).__name__}")
             ghosts._check(self.topology)
-            self._ghosts_lost = False
+        self._ghosts_lost = False           # marks set, or none: nothing lost
         self._ghosts = ghosts
 
     @property

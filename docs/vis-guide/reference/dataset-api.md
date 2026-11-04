@@ -1,7 +1,7 @@
 # Dataset API
 
 `tack.dataset`, in the `tack-vis` package. This page describes the API as it
-stands; the [Visualization Guide](../index.md)
+stands; the [Visualization Guide](../../visualization/index.md)
 develops the model, mesh construction, field spaces, filters, mesh kernels and
 complete pipelines with checked examples. For why it is shaped this way and how it got here, see the
 design records: [Dataset API](../design/dataset-api.md) and
@@ -336,7 +336,7 @@ cells apart without changing the topology. A geometry of order 2 is curved.
 
 **Fields.** `data.fields` holds the fields by name and space: two fields may
 share a name in different spaces, as VTK's point and cell arrays do
-([Fields that share a name](../create-fields.md#fields-that-share-a-name)).
+([Fields that share a name](../../data/build-meshes-and-fields.md)).
 
 | | |
 |---|---|
@@ -358,7 +358,7 @@ of that name.
 string kept in unyt's canonical spelling (`"m/s"`, `"m*s**-1"` and `"m/s^1"`
 are one unit; `"1"` is `"dimensionless"`), or `None` for unknown. The spatial
 unit is the geometry's, `data.unit`, and `origin` is in it. Kernels never see
-a unit. See [Coordinates, Units and Time](../12-units.md).
+a unit. See [Coordinates, Units and Time](../../data/units-coordinates-time.md).
 
 | | |
 |---|---|
@@ -397,7 +397,7 @@ hands filters one step at a time, and each step is a dataset at its time.
 | `extend_paths(paths, particles)` | joins a step's particles onto the paths so far, by `seed`: polylines through each particle's points in time |
 | `Pathlines(field, seeds, ...)`, `Streaklines(field, seeds, releases=1, ...)` | the current pathlines every step; the line of each seed's released particles, newest first |
 
-See [Streaming Steps](../13-streaming.md).
+See [Streaming Steps](../../visualization/over-time.md).
 
 ## Origins and point clouds
 
@@ -936,7 +936,7 @@ build if two of them define the same name.
 
 ### What views offer
 
-[Views](../17-views.md) introduces them.
+[Views](../../visualization/views.md) introduces them.
 
 
 Every view supports `for i in view` and `entity_id(i)`, the global id of
@@ -984,7 +984,7 @@ side `s` and its local face number.
 
 | Field view | Methods |
 |---|---|
-| `H1`, `L2`, `Constant` | `value(c, pc)`, `parametric_gradient(c, pc)` at parametric coordinates; `corner_value(c, j)`; the field's nodes, on cells with a reference element: `NODES` per cell, node `k`'s value `dof(c, k)`, its place in the array `dof_index(c, k)` and its parametric coordinates `node_parametric(k)` ([Work at a field's nodes](../05-mesh-kernels.md#work-at-a-fields-nodes)) |
+| `H1`, `L2`, `Constant` | `value(c, pc)`, `parametric_gradient(c, pc)` at parametric coordinates; `corner_value(c, j)`; the field's nodes, on cells with a reference element: `NODES` per cell, node `k`'s value `dof(c, k)`, its place in the array `dof_index(c, k)` and its parametric coordinates `node_parametric(k)` ([Work at a field's nodes](../../visualization/write-a-mesh-algorithm.md#work-at-a-fields-nodes)) |
 | `Values` | `at(i)` |
 | `SideTraces` | `trace(f, s, j)`, `value(f, s, pc)` |
 
@@ -1362,8 +1362,11 @@ The rules are Viskores':
 
 - a step is taken whole when every stage of it lies in the mesh;
 - a step that would leave the mesh is bisected to the boundary, and the
-  particle is then pushed out by the step still left, ending just outside
-  with `SPATIAL_BOUNDS`;
+  particle is then pushed just outside by an Euler step from the last point
+  inside (the bisection's bracket, grown until the locator finds no cell
+  there, at most the way to the boundary again), ending with
+  `SPATIAL_BOUNDS`; its time and path length count the way it went.
+  Viskores pushes by the way to the boundary again, counting it once;
 - a particle stops after `steps` steps, outside the mesh, or at zero
   velocity;
 - a seed outside the mesh does not move and loses `SUCCESS`.
@@ -1384,7 +1387,12 @@ that ends in a ghost cell and the cell's owner goes on with whole steps,
 so the paths are the whole mesh's, up to rounding, wherever a step
 (`step_size` times the speed) fits in the ghost layer. Without ghost cells
 a particle crosses by the short step to the boundary and the push out, so
-it differs by about a step. `advect` returns a `PartitionedDataSet` of the
+it differs by about a step. Pieces whose shared faces are not one surface
+(a hexahedron's bilinear face against a polyhedron's fanned one, in a
+`polyhedral="split"` reading) leave slivers that no piece holds: a particle
+pushed into one goes on from where the push would have ended going the way
+to the boundary again, if a piece holds that, the move counted in its time
+and length and drawn in its stretch. `advect` returns a `PartitionedDataSet` of the
 particles on the pieces they stopped in (or left the domain from), each
 with a `seed` (its number among all the seeds); `streamlines` one of each
 piece's stretches of the paths, with `seed` and `segment` on the cells,
