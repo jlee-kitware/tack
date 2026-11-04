@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Second derivatives against float64 central differences of the exact fields.
 
 A field's Hessian comes from its basis' second derivatives on a Tack with ``world_hessian``,

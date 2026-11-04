@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Fields as the one interface: a solver's own gradients through Field(..., gradient=),
 expression fields stored under a name and read like stored fields, and their derivatives
 in Tack's filters."""
@@ -175,4 +178,23 @@ def test_writers_store_an_expression_field(data):
     grid = dataset_to_vtk(data)
     np.testing.assert_allclose(np.asarray(grid.point_data["e"]), _values("T * T", data, at="points"), rtol=1e-5)
     np.testing.assert_allclose(np.asarray(grid.cell_data["g"]), _values("mag(grad(T))", data), rtol=1e-5)
+
+
+def test_reductions_of_an_expression_are_of_its_values(data):
+    data.fields["stored"] = fx.evaluate("T * T + 1", data, at="points")
+    by_text = td.statistics(data, "T * T + 1")
+    stored = td.statistics(data, "stored")
+    assert by_text.n == stored.n
+    np.testing.assert_allclose([by_text.min, by_text.max, by_text.mean], [stored.min, stored.max, stored.mean],
+                               rtol=1e-6)
+    np.testing.assert_allclose(td.entropy(data, "T * T + 1"), td.entropy(data, "stored"))
+    # The integral is the expression's own, by quadrature through its view: exact for
+    # T * T + 1, where its values at the points, interpolated, are not.
+    g, w = np.polynomial.legendre.leggauss(3)
+    axes = [((b - a) / 2 * g + (a + b) / 2, (b - a) / 2 * w) for a, b in ((0.1, 1.6), (0.2, 1.2), (0.3, 1.5))]
+    x, y, z = np.meshgrid(*(p for p, _ in axes), indexing="ij")
+    weights = np.einsum("i,j,k->ijk", *(q for _, q in axes))
+    exact = float((weights * ((x + 2 * y - 0.5 * z) ** 2 + 1)).sum())
+    got = td.integrate(data, {"e": "T * T + 1", "f": fx.field("T * T + 1", data)}).values
+    np.testing.assert_allclose([got["e"], got["f"]], exact, rtol=1e-5)
 

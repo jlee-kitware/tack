@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Bounds of expression fields: each cell's interval holds every value the expression takes in
 it, and a subdivided contour with them is the contour without them."""
 

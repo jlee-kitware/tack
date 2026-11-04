@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Device functions for derivatives in generated kernels: rows and columns of 3x3
 Jacobians, and the Jacobians of the vector operations. A Jacobian's row i is the
 gradient of component i."""

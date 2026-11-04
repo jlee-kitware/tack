@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Engineering quantities in expressions: units, a field dictionary, tensors and complex values.
 
 A harmonic response of a plate stored the way a solver writes it, in mm and MPa: a complex

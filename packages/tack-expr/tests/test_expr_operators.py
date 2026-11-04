@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Expressions written with Python operators on td.Fields give what the same expressions in the
 calculator syntax give."""
 

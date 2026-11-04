@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """compile_many: several expressions in one kernel give what one kernel each gives."""
 
 import numpy as np

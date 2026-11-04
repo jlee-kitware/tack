@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Expressions as device functions in other kernels, compiled expressions reused after the
 data changes, and the module cache."""
 

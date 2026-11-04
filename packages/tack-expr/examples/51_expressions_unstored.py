@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """51 -- Field expressions without storing them: in a kernel of your own, in a contour, on pieces.
 
 The rotation of example 50, v = (-y, x, w), whose speed |v| = s on the cylinder of radius

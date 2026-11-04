@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Field expressions for Tack: VTK calculator syntax over tack.dataset fields, and the same
 expressions written with Python operators on td.Fields."""
 
