@@ -120,6 +120,14 @@ def field(text, data, fields=None, units=None, derivatives=0):
     return _field(text, data, derivatives)
 
 
+def _ask_for_derivatives(name):
+    if name in ("world_gradient", "world_jet"):
+        order = ", 2" if name == "world_jet" else ""
+        return (f"An expression field compiles its derivatives only when asked: give the kernel "
+                f"td.differentiable(field{order}), or make it with fx.field(..., derivatives=1)")
+    return None
+
+
 def _field(text, data, derivatives=0):
     c = P._Compiler(text, data, "cells")
     c.held = True
@@ -163,6 +171,8 @@ def _field(text, data, derivatives=0):
     source = imports + "\n\nclass Mixin:\n" + methods
     space = ExpressionSpace(data, key=next(_keys))
     space._mixin = P._load(source, "Mixin")
+    if not derivatives:
+        space._mixin.__tack_missing__ = staticmethod(_ask_for_derivatives)
     space._data = data
     space._parts = parts
     space.continuous = continuous
