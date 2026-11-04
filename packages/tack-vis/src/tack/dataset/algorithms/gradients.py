@@ -59,16 +59,6 @@ def _in_plane(m, d):
     return ((bb * d[0] - ab * d[1]) * a + (aa * d[1] - ab * d[0]) * b) / det
 
 
-def differentiable(field, order=1):
-    """``field`` with its world derivatives up to ``order`` in its view: 1 for
-    ``world_gradient``, 2 for ``world_jet``'s Hessian too. A field evaluated where it is
-    read (an expression's) compiles them only when asked, through its space's
-    ``differentiable``; other fields have them already. ``gradients`` asks for itself;
-    a kernel of your own that differentiates such a field takes ``differentiable(field)``."""
-    make = getattr(field.space, "differentiable", None)
-    return make(field, order) if callable(make) else field
-
-
 class _BasisGradient:
     """A field view's world gradient from its basis: on every field view with a
     ``parametric_gradient`` and no other source (``_derivative_mixins``)."""
@@ -426,7 +416,7 @@ def gradients(data, field, at="cells"):
     as on shapes. A polygon's is the same in its plane, over its edges; polylines
     get zero. At the points, the cells' gradients are averaged over the cells
     around each point."""
-    field = _with_basis(data, differentiable(_field(data, field)))
+    field = _with_basis(data, _field(data, field))
     if not getattr(data.topology, "reference_cells", True) and field.gradient is not None:
         raise NotImplementedError("gradients of a field given its gradient on a mesh without "
                                   "reference elements")

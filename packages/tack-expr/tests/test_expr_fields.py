@@ -126,7 +126,7 @@ def test_filters_differentiate_an_expression_field(data):
     np.testing.assert_allclose(td.gradients(data, "T2").values.numpy(), _values("grad(T * T + 1)", data),
                                rtol=1e-5, atol=1e-6)
     out = tack.zeros((9 * data.num_cells,), tack.f32)
-    td.for_each(_hessians, data, "cells", td.differentiable(data.fields["T2"], 2), out)
+    td.for_each(_hessians, data, "cells", data.fields["T2"], out)
     g = np.array([1.0, 2.0, -0.5])
     np.testing.assert_allclose(out.numpy().reshape(-1, 3, 3), np.broadcast_to(2 * np.outer(g, g), (data.num_cells, 3, 3)),
                                rtol=1e-4, atol=1e-4)
@@ -138,27 +138,12 @@ def _gradients_of(cells, u, out):
         out[cells.entity_id(c)] = td.world_gradient(cells, u, c, cells.parametric_center())
 
 
-def test_a_kernel_differentiating_an_expression_field_is_told_how_to_ask(data):
+def test_a_kernel_of_your_own_differentiates_an_expression_field(data):
     f = fx.field("T * T", data)
     out = tack.zeros((data.num_cells,), tack.vec3(tack.f32))
-    with pytest.raises(ValueError, match=r"differentiable\(field\)"):
-        td.for_each(_gradients_of, data, "cells", f, out)
     group = next(g for g in data.launch_groups("cells", [f]) if g.count)
-    with pytest.raises(ValueError, match=r"differentiable\(field\)"):
-        _gradients_of(data.domain_view("cells", group), f.view(group), out)
-    td.for_each(_gradients_of, data, "cells", td.differentiable(f), out)
+    _gradients_of(data.domain_view("cells", group), f.view(group), out)
     np.testing.assert_allclose(out.numpy(), _values("grad(T * T)", data), rtol=1e-4, atol=1e-5)
-
-
-def test_an_expression_field_compiles_derivatives_when_asked(data):
-    f = fx.field("T * T + 1", data)
-    assert "world_gradient" not in f.space.source
-    g = td.differentiable(f)
-    assert "world_gradient" in g.space.source and "expression_hessian" not in g.space.source
-    assert td.differentiable(g) is g
-    h = td.differentiable(f, 2)
-    assert "expression_hessian" in h.space.source
-    assert "world_gradient" in fx.field("T * T", data, derivatives=1).space.source
 
 
 # --- one resolver; carried and written ----------------------------------------------

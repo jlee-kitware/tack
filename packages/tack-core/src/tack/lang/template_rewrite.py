@@ -796,19 +796,6 @@ def _own_attribute(owner, name):
     return None
 
 
-def _explained(message, node, names):
-    """``message`` with what the object holding ``names[-1]`` says it lacks: a template
-    class may define ``__tack_missing__(name)``, giving text or None."""
-    owner = node
-    for name in names[:-1]:
-        owner = owner.children.get(name)
-        if owner is None:
-            return message
-    explain = getattr(type(owner.obj), "__tack_missing__", None)
-    more = explain(names[-1]) if callable(explain) else None
-    return f"{message}. {more}" if more else message
-
-
 def _resolve_attribute(node, names, root, strict=True):
     """``root.a.b.attr...``: through the held templates ``a`` and ``b``, ``attr`` as a
     constant or a synthetic name, with any further attributes (an array's
@@ -824,11 +811,10 @@ def _resolve_attribute(node, names, root, strict=True):
             if name in owner.methods or name in owner.funcs or name in owner.children \
                     or not strict:
                 return None
-            message = (
+            raise ValueError(
                 f"Template method references {'.'.join([root, *names[:k + 1]])} which is "
                 f"neither a class constant, an instance scalar, a tack.Array, "
                 f"a @tack.func method, a @tack.func held as an attribute, nor a template")
-            raise ValueError(_explained(message, owner, [name]))
         for rest in names[k + 1:]:
             base = ast.Attribute(value=base, attr=rest, ctx=ast.Load())
         return base
@@ -1163,9 +1149,10 @@ class _KernelTemplateRewriter(ast.NodeTransformer):
         if names:
             call = _resolve_call(self.root, node, names, self.param_name, self.extra)
             if call is None:
-                raise ValueError(_explained(
+                raise ValueError(
                     f"Template object has no @tack.func method '{'.'.join(names)}', "
-                    f"and no @tack.func held as an attribute of that name", self.root, names))
+                    f"and no @tack.func held as an attribute of that name"
+                )
             node = call
         # A template, or one it holds, passed to a function or method -- unless
         # the callee is a method of a template not resolved yet, which binds

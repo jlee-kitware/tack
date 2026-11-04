@@ -48,24 +48,11 @@ class ExpressionSpace(Space):
         None where one of them was not."""
         try:
             with P.bound({**(P._BINDINGS.get() or {}), **self.names}):
-                f = _field(self.text, data, self.derivatives)
+                f = _field(self.text, data)
         except (P.ExprError, KeyError, TypeError, ValueError):
             return None
         f.space.names = self.names
         return td.Field(f.space, f.values, field.unit)
-
-    def differentiable(self, field, order):
-        """The field with its gradient (order 1), and its Hessian too (order 2), compiled
-        into its view; td.differentiable asks for them."""
-        if self.derivatives >= order:
-            return field
-        made = self.__dict__.setdefault("_differentiated", {})
-        if order not in made:
-            with P.bound({**(P._BINDINGS.get() or {}), **self.names}):
-                f = _field(self.text, self._data, order)
-            f.space.names = self.names
-            made[order] = f
-        return td.Field(made[order].space, made[order].values, field.unit)
 
     def stored(self, field, data):
         """Its values for a writer: at the points where the expression is continuous,
@@ -104,31 +91,21 @@ def _method(lines, result, prefix, name, signature, head=()):
     return f"\n    @tack.func\n    def {name}({signature}):\n" + "".join(f"        {b}\n" for b in body)
 
 
-def field(text, data, fields=None, units=None, derivatives=0):
+def field(text, data, fields=None, units=None):
     """The expression as a td.Field evaluated wherever it is read: by contour, clip,
     probe and the other algorithms that read a field through its view. fields and units:
-    as tack_expr.evaluate's; the field's unit is the expression's. derivatives: 1 or 2 compiles the
-    gradient, or the Hessian too, into its view now; otherwise td.differentiable does when
-    something asks."""
+    as tack_expr.evaluate's; the field's unit is the expression's."""
     from . import _front
     if _front.needs_front(text, fields, units, data) or _front.expands(text, data):
         text, names, unit = _front.prepare(text, data, fields, units)
         with P.bound({**(P._BINDINGS.get() or {}), **names}):
-            f = _field(text, data, derivatives)
+            f = _field(text, data)
         f.space.names = names
         return td.Field(f.space, f.values, unit)
-    return _field(text, data, derivatives)
+    return _field(text, data)
 
 
-def _ask_for_derivatives(name):
-    if name in ("world_gradient", "world_jet"):
-        order = ", 2" if name == "world_jet" else ""
-        return (f"An expression field compiles its derivatives only when asked: give the kernel "
-                f"td.differentiable(field{order}), or make it with fx.field(..., derivatives=1)")
-    return None
-
-
-def _field(text, data, derivatives=0):
+def _field(text, data):
     c = P._Compiler(text, data, "cells")
     result, rtype = c.parse()
     if rtype != P.S:
@@ -155,11 +132,8 @@ def _field(text, data, derivatives=0):
     else:
         methods += ranges[0]
         parts.append(("R", ranges[1], []))
-    if derivatives:
-        more, compilers = _derivative_methods(text, data, parts, derivatives)
-        methods += more
-    else:
-        compilers = []
+    more, compilers = _derivative_methods(text, data, parts)
+    methods += more
     for compiler in compilers:
         imports = "\n".join(sorted(set(imports.splitlines()) | set(P._imports(compiler).splitlines()))) + "\n"
     # Exact crossings read stored fields' entity values through dof; an expression has none
@@ -169,12 +143,9 @@ def _field(text, data, derivatives=0):
     source = imports + "\n\nclass Mixin:\n" + methods
     space = ExpressionSpace(data, key=next(_keys))
     space._mixin = P._load(source, "Mixin")
-    if not derivatives:
-        space._mixin.__tack_missing__ = staticmethod(_ask_for_derivatives)
     space._data = data
     space._parts = parts
     space.continuous = continuous
-    space.derivatives = derivatives
     orders = [getattr(c.lookup(n, 0).space, "order", 1) for n in sorted(c.fields_read)]
     space.default_subdivision = max([1] + [o for o in orders if isinstance(o, int)])
     space.source = source
@@ -184,7 +155,7 @@ def _field(text, data, derivatives=0):
     return td.Field(space, tack.zeros((data.num_cells,), tack.f64 if real is np.float64 else tack.f32))
 
 
-def _derivative_methods(text, data, parts, order=2):
+def _derivative_methods(text, data, parts):
     """An expression field's world_gradient, and world_jet with its Hessian, compiled from
     grad() of the expression, so Tack's filters and kernels differentiate it as they do a
     stored field; none where the expression's fields have no derivatives."""
@@ -195,11 +166,6 @@ def _derivative_methods(text, data, parts, order=2):
         return "", []
     parts.append(("G", list(g.args), list(g.consts)))
     out = _method(P._live(g.lines, [gradient]), gradient, "G", "world_gradient", "self, cells, c, pc")
-    if order < 2:
-        return out + ("\n    @tack.func\n    def world_jet(self, cells, c, pc):\n"
-                      "        n = self.no_hessian\n"
-                      "        return self.value(c, pc), self.world_gradient(cells, c, pc), "
-                      "tack.mat3([n, n, n], [n, n, n], [n, n, n])\n"), [g]
     rows = ", ".join(f"grad(grad({text})[{k}])" for k in range(3))
     try:
         h = P._Compiler("{" + rows + "}", data, "cells")

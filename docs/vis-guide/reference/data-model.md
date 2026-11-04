@@ -166,8 +166,6 @@ algorithms that work on them are in [Algorithms](algorithms.md).
 
 ::: tack.dataset.world_jet
 
-::: tack.dataset.differentiable
-
 ::: tack.dataset.hdiv_value
 
 ::: tack.dataset.hdiv_div
