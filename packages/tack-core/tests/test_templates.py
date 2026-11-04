@@ -602,3 +602,34 @@ def test_a_template_passed_to_what_cannot_take_it_is_refused(backend):
         _template_recursion(source, out)
     with pytest.raises(TypeError, match="binds to 'copy_of' the device-class object 'source'"):
         _template_kept(source, out)
+
+
+@tack.device_class
+class _Explains:
+    def __init__(self, n):
+        self.n = n
+
+    @staticmethod
+    def __tack_missing__(name):
+        return f"{name} comes on request" if name == "later" else None
+
+
+@tack.kernel
+def _asks_later(s, out):
+    for i in range(s.n):
+        out[i] = s.later(i)
+
+
+@tack.kernel
+def _asks_other(s, out):
+    for i in range(s.n):
+        out[i] = s.other(i)
+
+
+def test_a_template_class_explains_what_it_lacks(backend):
+    out = tack.empty((2,))
+    with pytest.raises(ValueError, match="later comes on request"):
+        _asks_later(_Explains(2), out)
+    with pytest.raises(ValueError, match="of that name$"):
+        _asks_other(_Explains(2), out)
+
