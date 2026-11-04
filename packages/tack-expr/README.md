@@ -527,7 +527,7 @@ merged:
 | #258 `fix/vtk-char-signedness` | VTK interop reads a `vtkCharArray` as signed or unsigned by its range |
 | #259 `vis/world-hessian` | `shape_hessian`, `parametric_hessian` and `geometry_curvature`; public `world_gradient`, `world_hessian` and `world_jet` |
 | #260 `vis/hdiv-hcurl` | the `HDiv` and `HCurl` spaces |
-| `vis/field-derivatives`, not yet proposed | `Field(..., gradient=)`; `world_gradient` and `world_jet` from the field's view; `register_field_resolver`; `differentiable`; filters carrying given gradients and making evaluated fields again; `dataset_to_vtk` of evaluated fields; a space's `default_subdivision` |
+| `vis/field-derivatives`, not yet proposed | `Field(..., gradient=)`; `world_gradient` and `world_jet` from the field's view; `register_field_resolver`; `differentiable`; `__tack_missing__`, a template class explaining a method it lacks; filters carrying given gradients and making evaluated fields again; `dataset_to_vtk` of evaluated fields; a space's `default_subdivision` |
 | `packages/tack-expr` on `field-expression-support` | the compiler, derivatives (of tensors too), `compile_many`, expression fields with bounds and their contours, ghost refresh, the Python operators, units on every entry point, the field dictionary, tensors and complex values (a complex result as two fields); tests, examples and this document. The contour hook for evaluated and continuous spaces is here too, not yet proposed. |
 
 The next steps:
