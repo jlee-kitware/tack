@@ -7,7 +7,8 @@ fx.field(text, data) is a td.Field whose view computes the expression at each po
 algorithm asks for: value(c, pc), corner_value(c, j), and value_range(c), a bound in each
 cell by interval arithmetic on its fields' Bernstein bounds, for the algorithms that skip
 cells by it (unbounded where the expression has no rule). Tack's algorithms take it as
-they take a stored field, or its text where a field goes (td.contour(data, "mag(U)", 1.0));
+they take a stored field, and fx.field(text) where a field goes
+(td.contour(data, fx.field("mag(U)"), 1.0)), read on each dataset or piece;
 a contour subdivides by its inputs' largest order. A filter's output has the expression
 again, over the fields carried there, and writers store its values.
 """
@@ -94,10 +95,29 @@ def _method(lines, result, prefix, name, signature, head=()):
     return f"\n    @tack.func\n    def {name}({signature}):\n" + "".join(f"        {b}\n" for b in body)
 
 
-def field(text, data, fields=None, units=None):
+class Expression:
+    """``field(text)``: the expression as a field argument for any of Tack's algorithms,
+    which read it on each dataset they are given (``on``), each piece of a
+    PartitionedDataSet included."""
+
+    def __init__(self, text, fields=None, units=None):
+        self.text, self.fields, self.units = text, fields, units
+
+    def on(self, data):
+        """The expression on ``data``, a td.Field (``field(text, data)``)."""
+        return field(self.text, data, self.fields, self.units)
+
+    def __repr__(self):
+        return f"tack_expr.field({self.text!r})"
+
+
+def field(text, data=None, fields=None, units=None):
     """The expression as a td.Field evaluated wherever it is read: by contour, clip,
     probe and the other algorithms that read a field through its view. fields and units:
-    as tack_expr.evaluate's; the field's unit is the expression's."""
+    as tack_expr.evaluate's; the field's unit is the expression's. Without ``data``, an
+    Expression, which an algorithm makes the field of on each dataset it reads it on."""
+    if data is None:
+        return Expression(text, fields, units)
     from . import _front
     if _front.needs_front(text, fields, units, data) or _front.expands(text, data):
         text, names, unit = _front.prepare(text, data, fields, units)
@@ -151,6 +171,9 @@ def _field(text, data):
     space.continuous = continuous
     orders = [getattr(c.lookup(n, 0).space, "order", 1) for n in sorted(c.fields_read)]
     space.default_subdivision = max([1] + [o for o in orders if isinstance(o, int)])
+    # An expression's polynomial order is not known in general: twice its inputs'
+    # largest, exact for a product of two of them, a quadrature approximation otherwise.
+    space.integration_order = 2 * space.default_subdivision
     space.source = source
     space.text = text
     space.names = {}

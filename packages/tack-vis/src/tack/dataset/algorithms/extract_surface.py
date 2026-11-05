@@ -8,6 +8,7 @@ import itertools
 import numpy as np
 
 import tack
+from tack import arrays
 from tack.algorithms.scan import exclusive_scan
 from tack.dataset import ids as id_types
 from tack.dataset import shapes
@@ -141,8 +142,7 @@ def _fresh_boundary(data, fields):
                    for f in data.fields.values())):
         return None
     if topology._boundary is not None:
-        surface, cells, points = topology._boundary
-        return _on_boundary(data, surface, fields, points=Take(points), cells=Pieces(cells))
+        return _on_boundary(data, fields)
     groups = [g for g in topology.groups() if g.shape.NUM_FACES and g.shape.DIMENSION == 3]
     starts = np.concatenate([[0], np.cumsum([g.count * g.shape.NUM_FACES
                                              for g in groups])]).astype(int)
@@ -203,24 +203,25 @@ def _fresh_boundary(data, fields):
                                connectivity, cells)
     count, points = _used_points(connectivity, data.num_points, idt)
     surface = UnstructuredTopology(types, offsets, connectivity, num_points=count)
-    topology._boundary = (surface, cells, points)
-    return _on_boundary(data, surface, fields, points=Take(points), cells=Pieces(cells))
+    topology._boundary = (surface, cells, points, None)
+    return _on_boundary(data, fields)
 
 
-def _on_boundary(data, surface, fields, **maps):
-    """The boundary ``surface`` with ``data``'s fields carried by ``maps``. Its
-    geometry is part of ``data``'s mesh and kept with it (``mesh_kept``), so a
-    repeated call on the same mesh gives the same surface geometry, and what is
-    derived from that (``normals``, ``measures``) is derived once."""
-    from tack.dataset.algorithms._common import mesh_kept
-
-    kept = mesh_kept(data)
-    held = kept.get("boundary")
-    if held is not None and held[0] is surface:
-        out = carry(data, surface, geometry=held[1], fields=fields, **held[2])
-    else:
-        out = carry(data, surface, fields=fields, **maps)
-    kept["boundary"] = (surface, out.geometry, maps)
+def _on_boundary(data, fields):
+    """The boundary ``data.topology._boundary`` holds, with ``data``'s fields carried
+    to it. The surface's geometry is kept there too, with the geometry and the
+    positions' revision it was taken from, so a repeated call on the same mesh
+    gives the same surface geometry, and what is kept with that (``mesh_kept``:
+    its normals) is computed once."""
+    topology = data.topology
+    surface, cells, points, kept = topology._boundary
+    source = (data.geometry, arrays._revision(data.geometry.values))
+    geometry = None
+    if kept is not None and kept[0][0] is source[0] and kept[0][1] == source[1]:
+        geometry = kept[1]
+    out = carry(data, surface, points=Take(points), cells=Pieces(cells), geometry=geometry,
+                fields=fields)
+    topology._boundary = (surface, cells, points, (source, out.geometry))
     return out
 
 
@@ -277,14 +278,6 @@ def extract_surface(data, faces=None, fields=None):
         fresh = _fresh_boundary(data, fields)
         if fresh is not None:
             return fresh
-        from tack.dataset.algorithms._common import mesh_kept
-
-        held = mesh_kept(data).get("boundary")
-        if (held is not None and "faces_to_cells" in held[2]
-                and not (data.topology.dimension == 3 and _has_order_two(data, fields))):
-            return _on_boundary(data, held[0], fields, **held[2])
-    boundary = faces is None
-    if boundary:
         from tack.dataset.algorithms.boundary_faces import boundary_faces
         faces = boundary_faces(data)
     ids = _face_ids(data, faces)
@@ -320,10 +313,8 @@ def extract_surface(data, faces=None, fields=None):
         return _on_used_points(out)
     count, points = _used_points(connectivity, data.num_points, idt)
     surface = UnstructuredTopology(types, offsets, connectivity, num_points=count)
-    maps = {"points": Take(points), "cells": Pieces(cells), "faces_to_cells": Take(ids)}
-    if boundary:
-        return _on_boundary(data, surface, fields, **maps)
-    return carry(data, surface, fields=fields, **maps)
+    return carry(data, surface, points=Take(points), cells=Pieces(cells),
+                 faces_to_cells=Take(ids), fields=fields)
 
 
 @tack.kernel

@@ -178,9 +178,9 @@ and what the algorithm supplies itself (the device, a locator, the
 communicator): `Contour(field="p", value=0.5, merge_points=False)`.
 
 Every algorithm of the [reference](../vis-guide/reference/algorithms.md) has
-one, named as the Tack function in CamelCase, but for the summaries (to come)
-and the finite-volume operators that take values on faces (`net_flux`,
-`divergence`, `perot`), which VTK keeps nowhere. "Fields" means the input's
+one, named as the Tack function in CamelCase, but for the finite-volume
+operators that take values on faces (`net_flux`, `divergence`, `perot`), which
+VTK keeps nowhere. "Fields" means the input's
 type, shallow-copied, with the new arrays added; "faces" means every face as a
 polygon (a 2D mesh's edges as lines), or every edge as a line, the new values
 their cell data.
@@ -189,29 +189,36 @@ their cell data.
 |---|---|---|
 | Cells kept whole | `Threshold`, `ExtractCells`, `ExtractGeometry`, `Mask` | `vtkUnstructuredGrid` |
 | | `ExtractExtent` | the input's structure |
-| Cutting | `Contour`, `Slice`, `SlicePlane`, `Clip` | `vtkUnstructuredGrid` |
-| Surfaces and edges | `ExtractSurface`, `BoundaryFaces`, `ExtractEdges`, `FeatureEdges`, `SurfaceNormals` | `vtkUnstructuredGrid` |
-| Shapes for drawing | `Tubes`, `Glyphs` | `vtkUnstructuredGrid` |
+| Cutting | `Contour`, `Slice`, `SlicePlane` | `vtkPolyData` |
+| | `Clip` | `vtkUnstructuredGrid`; `vtkPolyData` for a `vtkPolyData` input |
+| Surfaces and edges | `ExtractSurface`, `BoundaryFaces`, `ExtractEdges`, `FeatureEdges`, `SurfaceNormals` | `vtkPolyData` |
+| Shapes for drawing | `Tubes`, `Glyphs` | `vtkPolyData` |
 | Connectivity and winding | `ConnectedComponents` | the input's type, with `region` arrays |
 | | `CheckWinding` | fields: `inconsistent` on the cells |
-| | `MergePoints` | `vtkUnstructuredGrid` |
-| Changing cell types | `Tetrahedralize`, `Triangulate`, `AsPolyhedra`, `AsPolygons`, `Shrink`, `Subdivide` | `vtkUnstructuredGrid` |
+| | `MergePoints` | `vtkUnstructuredGrid`; `vtkPolyData` for a `vtkPolyData` input |
+| Changing cell types | `Tetrahedralize`, `AsPolyhedra`, `Shrink`, `Subdivide` | `vtkUnstructuredGrid` |
+| | `Triangulate`, `AsPolygons` | `vtkPolyData` |
 | Moving the geometry | `Transform` | the input's structure (an image stays an image) |
-| | `Warp`, `Cylindrical`, `Spherical` | a structured grid for a structured input, else `vtkUnstructuredGrid` |
+| | `Warp`, `Cylindrical`, `Spherical` | a structured grid for a structured input, `vtkPolyData` for a `vtkPolyData`, else `vtkUnstructuredGrid` |
 | Measures and quality | `CellGeometry`, `CellCenters`, `CellQuality`, `Elevation`, `ImplicitValues`, `CellIds`, `PointIds` | fields |
 | | `FaceGeometry`, `FaceCenters`, `EdgeLengths` | faces (edges) |
 | Fields from fields | `Gradients`, `FlowQuantities`, `Project`, `ValuesAtCenters`, `Interpolate`, `Magnitude`, `Dot`, `Cross`, `Composite`, `LogValues` | fields |
 | | `Convert` | the input's structure |
 | Finite volumes | `Jump`, `UpwindFlux` | faces |
+| Summaries | `Statistics`, `Entropy` | `vtkTable`, a row per field (and component) |
+| | `Integrate` | `vtkUnstructuredGrid` of one vertex, as `vtkIntegrateAttributes` |
 | Probing, sampling and particles | `Probe` (the source on port 1), `SphInterpolate` (the particles on port 1) | the input's structure, with the source's fields |
 | | `Voxelize` | `vtkImageData` (the `grid` parameter's) |
-| | `Streamlines`, `Advect` (seeds on port 1, or `seeds=`) | `vtkUnstructuredGrid` |
-| Point clouds | `ExtractPoints`, `ThresholdPoints`, `MaskPoints`, `Outliers`, `VoxelDownsample`, `HaloCatalog` | `vtkUnstructuredGrid` |
+| | `Streamlines`, `Advect` (seeds on port 1, or `seeds=`) | `vtkPolyData` |
+| Point clouds | `ExtractPoints`, `ThresholdPoints`, `MaskPoints`, `Outliers`, `VoxelDownsample`, `HaloCatalog` | `vtkPolyData` |
 | | `PointNormals`, `SphDensity` | fields |
 | | `Deposit` | `vtkImageData` (the `grid` parameter's) |
 | Pieces and ghosts | `GhostCells`, `GenerateGlobalIds`, `MergePieces`, `GhostPoints` | over every piece of a `vtkPartitionedDataSet` |
 | | `Split` | a `vtkPartitionedDataSet` |
 | | `RemoveGhosts` | the input's structure |
+| AMR hierarchies | `AverageDown` | `vtkOverlappingAMR` |
+| Over time | `RunningStatistics`, `TimeDerivative` | fields, over the steps |
+| | `Advection`, `Pathlines`, `Streaklines` (seeds on port 1, or `seeds=`) | `vtkPolyData` |
 
 A `vtkPartitionedDataSet` input runs the filter on each piece and gives a
 `vtkPartitionedDataSet`. The algorithms whose Tack filter answers for the
@@ -286,6 +293,73 @@ empty, and the algorithm's `error` attribute keeps the exception for Python
 callers. `error` is `None` after a run that succeeded, so a script checks it
 after `Update()` or a pipeline call.
 
+The summaries reduce all their input to one answer, as VTK's
+`vtkDescriptiveStatistics` and `vtkIntegrateAttributes` do: every dataset of a
+partitioned dataset or a tree, on every MPI rank, and every rank gets the
+answer. A point that pieces share counts once where its copies' owner is
+marked: run `GhostCells` or `GenerateGlobalIds` first (pieces cut without
+either, such as `vtkExtractVOI`'s, count it in each). `Statistics` and
+`Entropy` take `fields` (by default every field) and give a row per field, a
+vector field's components one by one; the statistics keep Tack's names
+(`kurtosis` is not the excess). `Integrate` puts its one point at the input's
+centroid, each field's integral on it, and the measure as `Length`, `Area` or
+`Volume`; integrals are by quadrature through each cell's map, so curved and
+higher-order cells exactly.
+
+An AMR hierarchy, a `vtkOverlappingAMR`, is one Tack `AMRDataSet` (see
+[AMR and octrees](../data/amr-and-octrees.md)), each box marked with what a
+finer box covers. The algorithms whose Tack filter takes a hierarchy take it
+whole: `Probe` as its source (each point at its finest box, as
+`vtkAMRResampleFilter` samples), `Statistics`, `Entropy`, `Integrate`,
+`Voxelize`, `GhostCells` and `AverageDown`. A region that a finer box covers,
+and a point that a sibling box holds, counts once. `GhostCells` grows each box
+within its level and gives a `vtkOverlappingAMR` of the input's boxes whose
+blocks are the grown ones. `AverageDown` puts the finer levels' values of one
+field into the coarse cells and points they cover and leaves its input as it
+was.
+
+The other algorithms run box by box, as Tack's filters do on AMR, each level's
+boxes taken as the pieces of a partitioned dataset and the cells a finer box
+covers left out. One that computes fields (`Elevation`, `Gradients`,
+`Project`, ...) gives the hierarchy back with them. One that makes a dataset
+(`Contour`, `Clip`, `Slice`, `Threshold`, ...) gives a
+`vtkPartitionedDataSetCollection` with a partitioned dataset per level, named
+`level0`, `level1`, and so on. Contours and slices of different levels do not
+join where the levels meet ([Adaptive data](adaptive-data.md) has the limits),
+and `Gradients` at a box's edge needs `GhostCells` first, as for any pieces.
+`GenerateGlobalIds`, `Streamlines` and `Advect` refuse a hierarchy, since box by
+box their answers would mislead: ids repeated from level to level, paths
+ending where a finer box begins. Over MPI ranks, each rank holds its own blocks, the others'
+empty, as VTK spreads a hierarchy, and the ranks convert it together
+(`vtk_to_dataset(amr, world=...)` does the same).
+
+<!-- tack-check: vtk-pipeline-amr -->
+```python
+from vtkmodules.vtkFiltersAMR import vtkAMRGaussianPulseSource
+
+import tack
+from tack.interop.vtk.algorithms import AverageDown, GhostCells, Statistics, Threshold
+
+tack.set_default_device("cpu")
+
+pulse = vtkAMRGaussianPulseSource(dimension=3)()       # a box, two finer ones in it
+once = Statistics(fields=["Gaussian-Pulse"])(pulse)    # covered cells counted once
+
+grown = GhostCells(layers=1)(pulse)                    # blocks grown by a layer
+assert grown.GetDataSetAsCartesianGrid(1, 0).number_of_cells > 4 * 6 * 10
+again = Statistics(fields=["Gaussian-Pulse"])(grown)   # ghosts count nowhere
+assert again.GetColumnByName("n").GetValue(0) == once.GetColumnByName("n").GetValue(0)
+
+averaged = AverageDown(field="Gaussian-Pulse")(pulse)  # fine values in the coarse box
+
+kept = Threshold(field=("Gaussian-Pulse", "cells"), lower=0.0, upper=1.0)(pulse)
+assert kept.GetNumberOfPartitionedDataSets() == 2       # a level each, box by box
+```
+
+The temporal filters run in situ, one step per execution, or drive the
+pipeline through the input's time steps themselves. See
+[Steps over time](over-time.md#in-a-vtk-pipeline).
+
 ## Write your own VTK algorithm
 
 Subclass `TackAlgorithm` and give it `compute(data)`, a Tack dataset from a
@@ -328,7 +402,9 @@ assert (source >> skin)().number_of_cells != boundary.number_of_cells
 `compute` runs once per piece of a partitioned input. An algorithm whose
 answer needs every piece overrides `execute(data)` instead. `OUTPUT` names
 the output's VTK type for a dataset input: `"vtkUnstructuredGrid"` by
-default, or `None` for the input's own type. A filter of your own
+default, `"vtkPolyData"` for a filter of points, lines and surfaces (its cells
+become the polydata's vertices, lines and polygons), or `None` for the input's own
+type. A filter of your own
 ([Write a filter](write-a-filter.md)) goes into `compute` the same way.
 
 To wrap a `tack.dataset` function as it is, name it instead: `FUNCTION =

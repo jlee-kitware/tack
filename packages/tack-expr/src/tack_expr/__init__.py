@@ -4,10 +4,8 @@
 """Field expressions for Tack: VTK calculator syntax over tack.dataset fields, and the same
 expressions written with Python operators on td.Fields."""
 
-import tack.dataset as _td
-
 from .dictionary import Entry, FieldDictionary, cgns
-from .lazy import field
+from .lazy import Expression, field
 from .ops import (
     Expr,
     arg,
@@ -64,24 +62,62 @@ from .parser import (
     function,
 )
 
-__all__ = ["Compiled", "Entry", "Expr", "ExprError", "FieldDictionary", "Function", "arg",
-           "cells", "cgns", "clamp", "clear_cache", "compile_expression", "compile_many", "conj",
-           "coords", "cross", "curl", "ddot", "det", "dev", "div", "dot", "eigvals", "evaluate", "evaluate_complex", "field", "for_each", "fsum", "function",
-           "grad", "identity", "imag", "inv", "laplacian", "mag", "mag2", "maximum", "minimum", "neighbor", "norm", "outer", "owner",
-           "phase", "pi", "points", "qcrit", "real", "ref", "skew", "sym", "trace",
-           "transpose", "vec", "vonmises", "where"]
+__all__ = [
+    "Compiled",
+    "Entry",
+    "Expr",
+    "ExprError",
+    "Expression",
+    "FieldDictionary",
+    "Function",
+    "arg",
+    "cells",
+    "cgns",
+    "clamp",
+    "clear_cache",
+    "compile_expression",
+    "compile_many",
+    "conj",
+    "coords",
+    "cross",
+    "curl",
+    "ddot",
+    "det",
+    "dev",
+    "div",
+    "dot",
+    "eigvals",
+    "evaluate",
+    "evaluate_complex",
+    "field",
+    "for_each",
+    "fsum",
+    "function",
+    "grad",
+    "identity",
+    "imag",
+    "inv",
+    "laplacian",
+    "mag",
+    "mag2",
+    "maximum",
+    "minimum",
+    "neighbor",
+    "norm",
+    "outer",
+    "owner",
+    "phase",
+    "pi",
+    "points",
+    "qcrit",
+    "real",
+    "ref",
+    "skew",
+    "sym",
+    "trace",
+    "transpose",
+    "vec",
+    "vonmises",
+    "where",
+]
 
-
-def _resolve(data, text):
-    # Text that names no stored field is an expression (V_X, coordsX, mag(U)); a bare
-    # name that is not one either stays the dataset's KeyError.
-    try:
-        return field(text, data)
-    except ExprError:
-        if text.isidentifier():
-            return None
-        raise
-
-
-if hasattr(_td, "register_field_resolver"):
-    _td.register_field_resolver(_resolve)

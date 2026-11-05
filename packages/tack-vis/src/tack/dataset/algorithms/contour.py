@@ -461,15 +461,14 @@ def contour(data, field, value, merge_points=True, fields=None, dimension=None,
     is placed on an edge to a missing value.
 
     With ``merge_points``, triangles share their points: by global edge when
-    the field and the geometry are both continuous (an ``H1`` field, or a space
-    whose ``continuous`` attribute says so), so the surface is watertight; otherwise only within each cell, so a DG field's surface
+    the field and the geometry are both continuous (an ``H1`` field, or one of a
+    space that declares itself ``continuous``), so the surface is watertight; otherwise only within each cell, so a DG field's surface
     keeps its jumps and an ``L2`` geometry's its gaps. ``H1`` fields carry
     onto the surface's points, interpolated along the same edges; cell
     fields (``Constant``, values on cells) onto its triangles, from the cell
     each came from.
     """
-    field = _field(data, field)
-    value = _in_unit_of(field, value, "contour's value")
+    value = _in_unit_of(_field(data, field), value, "contour's value")
     from tack.dataset.ghosts import visible
 
     data, field = visible(data, field)
@@ -521,10 +520,7 @@ def contour(data, field, value, merge_points=True, fields=None, dimension=None,
     space = field.space
     if not space.interpolated or space.on not in ("cells", "points"):
         raise TypeError(f"contour needs a field with a basis on the cells, not {space!r}")
-    # A space that declares itself continuous (an expression of continuous fields
-    # evaluated where it is read, say) shares its crossings between cells as H1 does.
-    continuous = isinstance(space, H1) or getattr(space, "continuous", False)
-    per_cell = 0 if continuous and isinstance(data.geometry.space, H1) else 1
+    per_cell = 0 if space.continuous and isinstance(data.geometry.space, H1) else 1
     groups = [g for g in data.launch_groups("cells", [field])
               if g.count and g.shape.CONTOUR_TRIANGLES]
     n_cells = data.num_cells

@@ -151,12 +151,12 @@ def test_a_kernel_of_your_own_differentiates_an_expression_field(data):
 
 # --- one resolver; carried and written ----------------------------------------------
 
-def test_filters_take_expression_text(data):
-    by_text = td.contour(data, "T * T", 1.0)
+def test_filters_take_an_expression(data):
+    deferred = td.contour(data, fx.field("T * T"), 1.0)
     by_field = td.contour(data, fx.field("T * T", data), 1.0)
-    assert by_text.num_points == by_field.num_points > 0
-    np.testing.assert_allclose(td.gradients(data, "T * T").values.numpy(), _values("grad(T * T)", data),
-                               rtol=1e-4, atol=1e-5)
+    assert deferred.num_points == by_field.num_points > 0
+    np.testing.assert_allclose(td.gradients(data, fx.field("T * T")).values.numpy(),
+                               _values("grad(T * T)", data), rtol=1e-4, atol=1e-5)
     with pytest.raises(KeyError):
         td.contour(data, "nosuch", 1.0)
 
@@ -182,12 +182,12 @@ def test_writers_store_an_expression_field(data):
 
 def test_reductions_of_an_expression_are_of_its_values(data):
     data.fields["stored"] = fx.evaluate("T * T + 1", data, at="points")
-    by_text = td.statistics(data, "T * T + 1")
+    by_text = td.statistics(data, fx.field("T * T + 1"))
     stored = td.statistics(data, "stored")
     assert by_text.n == stored.n
     np.testing.assert_allclose([by_text.min, by_text.max, by_text.mean], [stored.min, stored.max, stored.mean],
                                rtol=1e-6)
-    np.testing.assert_allclose(td.entropy(data, "T * T + 1"), td.entropy(data, "stored"))
+    np.testing.assert_allclose(td.entropy(data, fx.field("T * T + 1")), td.entropy(data, "stored"))
     # The integral is the expression's own, by quadrature through its view: exact for
     # T * T + 1, where its values at the points, interpolated, are not.
     g, w = np.polynomial.legendre.leggauss(3)
@@ -195,18 +195,28 @@ def test_reductions_of_an_expression_are_of_its_values(data):
     x, y, z = np.meshgrid(*(p for p, _ in axes), indexing="ij")
     weights = np.einsum("i,j,k->ijk", *(q for _, q in axes))
     exact = float((weights * ((x + 2 * y - 0.5 * z) ** 2 + 1)).sum())
-    got = td.integrate(data, {"e": "T * T + 1", "f": fx.field("T * T + 1", data)}).values
+    got = td.integrate(data, {"e": fx.field("T * T + 1"), "f": fx.field("T * T + 1", data)}).values
     np.testing.assert_allclose([got["e"], got["f"]], exact, rtol=1e-5)
 
 
-def test_a_surface_flux_and_a_component_by_text(data):
+def test_an_expression_reduces_over_pieces(data):
+    whole = td.statistics(data, fx.field("T * T + 1"))
+    pieces = td.PartitionedDataSet([data, td.extract_cells(data, np.arange(data.num_cells // 2))])
+    both = td.statistics(pieces, fx.field("T * T + 1"))
+    assert both.n > whole.n
+    assert both.max == pytest.approx(whole.max)
+    flux = td.integrate(td.PartitionedDataSet([data]), {"t": fx.field("T * T + 1")}).values["t"]
+    assert flux == pytest.approx(td.integrate(data, {"t": fx.field("T * T + 1")}).values["t"])
+
+
+def test_a_surface_flux_and_a_component(data):
     data.fields["V"] = fx.evaluate("coords", data, at="points")
     box = td.extract_surface(data)
     # normals is derived from the surface where it is read, the cells here: nothing stores it.
-    flux = td.integrate(box, ["dot(V, normals)"]).values["dot(V, normals)"]
-    volume = td.integrate(data, ["div(V)"]).values["div(V)"]
+    flux = td.integrate(box, {"flux": fx.field("dot(V, normals)")}).values["flux"]
+    volume = td.integrate(data, {"div": fx.field("div(V)")}).values["div"]
     np.testing.assert_allclose(flux, volume, rtol=1e-5)                 # the divergence theorem
-    np.testing.assert_allclose(td.statistics(data, "V_X").mean, _values("coordsX", data, at="points").mean(),
+    np.testing.assert_allclose(td.statistics(data, fx.field("V_X")).mean, _values("coordsX", data, at="points").mean(),
                                rtol=1e-5)
     with pytest.raises(KeyError):
         td.statistics(data, "nosuch")

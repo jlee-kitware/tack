@@ -165,7 +165,8 @@ def _space_parts(field, group, space_mixin=None, corners_only=False):
 def _derivative_mixins(field, group, mixins, attributes):
     """Where a field view's ``world_gradient`` and ``world_jet`` come from: the gradient
     the field was given, a space's own mixin, or else the basis -- the parts of it the
-    view has, since every method of a view resolves when a kernel takes it."""
+    view has. A kernel compiles only the methods it reaches, so a view may carry
+    derivatives nothing asks for."""
     from tack.dataset.algorithms.gradients import _BasisGradient, _BasisJet, _GivenGradient
 
     given = getattr(field, "gradient", None)
@@ -736,18 +737,17 @@ class Fields(MutableMapping):
         return f"Fields({{{', '.join(f'{k!r}: {f.space!r}' for k, f in self.items())}}})"
 
 
-def stored(data):
-    """``data`` with each field whose space is evaluated where it is read (an
-    expression's) replaced by its values, as the space's ``stored`` gives them: for
-    writers, which take arrays. ``data`` itself when it has none."""
+def _with_stored_values(data):
+    """``data`` with each evaluated field replaced by its stored values (its space's
+    ``stored``), for writers, which take arrays; ``data`` itself when it has none."""
     entries = data.fields.entries()
-    if not any(callable(getattr(f.space, "stored", None)) for _, f in entries):
+    if not any(f.space.evaluated for _, f in entries):
         return data
     import copy
 
     out = copy.copy(data)
-    out.fields = [(name, f.space.stored(f, data) if callable(getattr(f.space, "stored", None))
-                   else f) for name, f in entries]
+    out.fields = [(name, f.space.stored(f, data) if f.space.evaluated else f)
+                  for name, f in entries]
     return out
 
 

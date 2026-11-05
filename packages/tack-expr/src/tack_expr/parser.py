@@ -157,21 +157,70 @@ def _entity_numbered_h1(field):
     return isinstance(field.space, td.H1) and getattr(field.space, "dofs", None) is None
 
 
-# Where each mode reads a field: a derived field (td.named_field) is the one there.
+# Where each mode reads a field: a mesh quantity (_MESH) is the one there.
 _AT = {"cells": "cells", "corners": "cells", "faces": "faces", "nodes": "points",
        "pointloop": "points"}
 
 
+def _surface_normals(name, on):
+    def make(data):
+        made = td.surface_normals(data).fields[name]
+        return td.Field(td.Values(data, on), made.values, made.unit)
+    return make
+
+
+#: The mesh quantities an expression names where the dataset stores no field of the
+#: name, by where they are read: Tack's geometry functions, which keep them with the
+#: mesh, so they are computed once a mesh.
+_MESH = {
+    "normals": {"points": _surface_normals("normals", "points"),
+                "cells": _surface_normals("cell_normals", "cells"),
+                "faces": lambda data: td.face_geometry(data).normal},
+    "measures": {"cells": lambda data: td.cell_geometry(data).measure,
+                 "faces": lambda data: td.face_geometry(data).area},
+    "centroids": {"cells": lambda data: td.cell_geometry(data).centroid},
+}
+
+
+def _location(field):
+    space = field.space
+    if isinstance(space, td.H1) or (isinstance(space, td.Values) and space.on == "points"):
+        return "points"
+    if isinstance(space, (td.Constant, td.L2)) or (isinstance(space, td.Values) and space.on == "cells"):
+        return "cells"
+    if isinstance(space, td.Values) and space.on == "faces":
+        return "faces"
+    return None
+
+
 def _named_field(data, name, at=None):
-    """The field a name stands for on data, read at ``at``: stored, or derived from the
-    dataset there (td.named_field: normals, measures, centroids)."""
-    named = getattr(td, "named_field", None)
-    return named(data, name, at) if named is not None else data.fields[name]
+    """The field a name stands for on data, read at ``at`` (points, cells, faces, or None
+    for wherever it is): a field stored under the name there comes first, then the mesh
+    quantity of the name there (_MESH: normals, measures, centroids), then a field stored
+    under the name elsewhere. With no ``at``, the stored field, else the quantity at the
+    first location the dataset has it."""
+    if name not in _MESH:
+        return data.fields[name]
+    stored = data.fields.named(name)
+    places = _MESH[name]
+    if at is not None:
+        for field in stored:
+            if _location(field) == at:
+                return field
+        return places[at](data) if at in places else data.fields[name]
+    if stored:
+        return data.fields[name]
+    reasons = []
+    for where, make in places.items():
+        try:
+            return make(data)
+        except (ValueError, TypeError, NotImplementedError) as e:
+            reasons.append(f"at {where}: {e}")
+    raise KeyError(f"{name!r} is no part of this dataset ({'; '.join(reasons)})")
 
 
 def _derived(name):
-    names = getattr(td, "derived_names", None)
-    return names is not None and name in names()
+    return name in _MESH
 
 
 class _Compiler:
