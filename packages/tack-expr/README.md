@@ -513,6 +513,15 @@ ms on the same grid, against 0.39 ms for `td.project` and a second kernel.
   but a product of them is refused, as elsewhere in Tack.
 - **Bounds cover the common operations.** A subdivided contour of an expression with a derivative,
   or a function with no interval rule, refines every cell.
+- **Integrals of nonlinear expressions are approximate.** An expression field declares its
+  `integration_order` as twice its inputs' largest order: exact for a product of two of them, a
+  quadrature approximation for `mag()`, a quotient or a transcendental function.
+- **A flux takes the surface's winding.** `normals` on a surface is `surface_normals`', which winds
+  each connected region as its first cell is. `extract_surface` winds a solid's boundary outward;
+  a contour's surface may point either way.
+- **Point-only filters leave out a field with a given gradient.** Glyphs, feature edges and point
+  extraction have no cells to carry a gradient on cells to, so Tack leaves such a field out rather
+  than let `grad` fall back to the basis on the output.
 - **Ghost exchange across MPI ranks is untested here.** `update_ghosts=True` uses Tack's exchange,
   tested in one process; `mpi4py` is not installed on the Spark.
 - **Host overhead per call.** About 65 microseconds per launch goes to `td.for_each`'s setup;
