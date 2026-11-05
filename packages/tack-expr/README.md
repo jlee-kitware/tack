@@ -117,10 +117,18 @@ there. STAR-CCM+ makes the same split: the solver owns its storage, and post-pro
 functions.
 
 So field expressions are Tack's one field interface on the consumer side, for filters, Catalyst,
-apps and agents. Every filter takes a `Field` or a string: a stored field's name gives that field,
-with no kernel, and any other string is an expression, the saved form of the tree the Python
-operators build. tack-expr registers the resolver with `td.register_field_resolver`, so
-`td.contour(data, "mag(U)", 1.0)` contours an expression and `fx.contour` is gone.
+apps and agents. Every filter takes a `Field`, a stored field's name, or an object whose
+`on(data)` gives the `Field`. `fx.field("mag(U)")` is such an object: Tack reads it on each dataset
+it is given, each piece of a `PartitionedDataSet` included, so `td.contour(data, fx.field("mag(U)"),
+1.0)` contours an expression, `td.statistics(pieces, fx.field("mag(U)"))` reduces one over pieces,
+and Tack never reads expression text. `fx.contour` is gone.
+
+An expression names three mesh quantities where the dataset stores no field of the name, each read
+where the expression is: `normals` (a surface's at its points and cells, every mesh's at its
+faces), `measures` (each cell's volume, area or length; each face's area) and `centroids`. They
+come from Tack's `surface_normals`, `cell_geometry` and `face_geometry`, which keep them with the
+mesh, so `td.integrate(surface, {"flux": fx.field("dot(U, normals)")})` over many time steps
+computes the normals once.
 
 A field's derivatives come from whatever knows them best. By default its view differentiates its
 basis. A solver that reconstructs its own gradient passes it as a field, `td.Field(space, values,
@@ -525,13 +533,19 @@ merged:
 | #258 `fix/vtk-char-signedness` | VTK interop reads a `vtkCharArray` as signed or unsigned by its range |
 | #259 `vis/world-hessian` | `shape_hessian`, `parametric_hessian` and `geometry_curvature`; public `world_gradient`, `world_hessian` and `world_jet` |
 | #260 `vis/hdiv-hcurl` | the `HDiv` and `HCurl` spaces |
-| `vis/field-derivatives`, not yet proposed | `Field(..., gradient=)`; `world_gradient` and `world_jet` from the field's view; `register_field_resolver`; template methods passing a held template to another held template's method, taking only the synthetic parameters they read, and resolved only when a kernel reaches them; CUDA's contractions written as explicit fused multiply-adds; filters carrying given gradients and making evaluated fields again; `dataset_to_vtk` of evaluated fields; a space's `default_subdivision` |
-| `packages/tack-expr` on `field-expression-support` | the compiler, derivatives (of tensors too), `compile_many`, expression fields with bounds and their contours, ghost refresh, the Python operators, units on every entry point, the field dictionary, tensors and complex values (a complex result as two fields); tests, examples and this document. The contour hook for evaluated and continuous spaces is here too, not yet proposed. |
+| #298 `core/template-compile`, merged | template methods passing a held template to another held template's method, taking only the synthetic parameters they read, and resolved only when a kernel reaches them; CUDA's contractions written as explicit fused multiply-adds |
+| #299 `vis/given-gradients`, merged | `Field(..., gradient=)`; `world_gradient` and `world_jet` from the field's view |
+| #355 `vis/carry-given-gradients` | filters carrying a field's given gradient |
+| #356 `vis/integrate-fields` | `integrate` taking Fields by name |
+| #357 `vis/field-protocol` | a field argument may be an object whose `on(data)` gives the `Field` |
+| `vis/evaluated-fields` | fields evaluated where they are read, declared on `Space`: `evaluated`, `continuous`, `default_subdivision`, `integration_order`, `rebind`, `stored` |
+| `vis/mesh-metrics` | `cell_geometry`, `face_geometry` and `surface_normals` kept with the mesh |
+| `packages/tack-expr` on `field-expression-support` | the compiler, derivatives (of tensors too), `compile_many`, expression fields with bounds and their contours, ghost refresh, the Python operators, units on every entry point, the field dictionary, tensors and complex values (a complex result as two fields); tests, examples and this document. |
 
 The next steps:
 
-1. **The field interface as a pull request**: `vis/field-derivatives` to Tack's main.
-2. **tack-expr as a pull request**, with the contour hook for evaluated and continuous spaces.
+1. **The field interface merged**: #355, #356, #357, `vis/evaluated-fields` and `vis/mesh-metrics`.
+2. **tack-expr as a pull request**, on them.
 3. **Vector spaces above order 1 on tetrahedra**, with face and interior moments in barycentric
    bases.
 4. **Every rank in the ghost exchange.** A rank that owns no pieces skips the `td.update_ghosts`
