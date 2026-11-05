@@ -139,135 +139,47 @@ def _same_space(*fields):
     return space, n
 
 
-_RESOLVERS = []
-_DERIVED = {}             # name -> {location: compute}
-_LOCATIONS = ("points", "cells", "faces")
-
-
-def register_derived_field(name, compute, at):
-    """Lets ``name`` stand, at ``at`` (``"points"``, ``"cells"`` or ``"faces"``), for a
-    field a dataset makes from itself when it stores none of that name there:
-    ``compute(data)`` gives the ``Field`` on ``data``, a function of its mesh:
-    made the first time it is asked for and kept with the mesh (``mesh_kept``),
-    so every dataset on the same geometry shares it and it is made again when
-    the mesh changes. ``extract_surface`` of the same mesh gives the same surface
-    geometry, and so the same normals. One name
-    is one quantity, registered at each location it has: Tack registers
-    ``normals`` (a surface's at its points and cells, ``surface_normals``'; every
-    mesh's at its faces, ``face_geometry``'s), ``measures`` (each cell's volume, area
-    or length; each face's area) and ``centroids`` (each cell's)."""
-    if at not in _LOCATIONS:
-        raise ValueError(f"at is one of {_LOCATIONS}, not {at!r}")
-    _DERIVED.setdefault(name, {})[at] = compute
-
-
-def derived_names():
-    """The names ``register_derived_field`` has registered."""
-    return tuple(_DERIVED)
-
-
-def _location(field):
-    from tack.dataset.spaces import H1, L2, Constant, Values
-
-    space = field.space
-    if isinstance(space, H1) or (isinstance(space, Values) and space.on == "points"):
-        return "points"
-    if isinstance(space, (Constant, L2)) or (isinstance(space, Values) and space.on == "cells"):
-        return "cells"
-    if isinstance(space, Values) and space.on == "faces":
-        return "faces"
-    return None
-
-
-def mesh_kept(data):
-    """A dict for what is computed from ``data``'s mesh alone (its derived fields,
-    its boundary's geometry), kept with the mesh: shared by every dataset on the
-    same geometry (and so the same topology), and emptied when Tack has written
-    the positions since (``arrays._revision``), so it changes when the mesh does."""
+def mesh_kept(data, key, make):
+    """``make()``, kept with ``data``'s mesh under ``key``: for what is computed from the
+    mesh alone (``cell_geometry``, ``face_geometry``, ``surface_normals``). Every
+    dataset on the same geometry (and so the same topology) shares it,
+    and it is made again when the mesh changes: another geometry, or positions
+    Tack has written since (``arrays._revision``; writes through shared memory are
+    not seen). New fields leave it as it is."""
     geometry = data.geometry
     revision = arrays._revision(geometry.values)
     kept = geometry.__dict__.get("_mesh_kept")
     if kept is None or kept[0] != revision:
         kept = geometry.__dict__["_mesh_kept"] = (revision, {})
-    return kept[1]
-
-
-def _derived(data, name, at):
-    kept = mesh_kept(data)
-    if (name, at) not in kept:
-        kept[(name, at)] = _DERIVED[name][at](data)
-    return kept[(name, at)]
-
-
-def named_field(data, name, at=None):
-    """The field ``name`` names on ``data``, read at ``at`` (``"points"``, ``"cells"``,
-    ``"faces"``, or None for wherever it is). A field stored under the name there
-    comes first, then the one the dataset derives there
-    (``register_derived_field``), then one stored under the name elsewhere. With
-    no ``at``, the stored field, else the derived one at the first location it is
-    registered at that the dataset has. A ``KeyError`` for none."""
-    if not isinstance(name, str) or name not in _DERIVED:
-        return data.fields[name]
-    stored = data.fields.named(name)
-    places = _DERIVED[name]
-    if at is not None:
-        for field in stored:
-            if _location(field) == at:
-                return field
-        if at in places:
-            return _derived(data, name, at)
-        return data.fields[name]
-    if stored:
-        return data.fields[name]
-    reasons = []
-    for where in places:
-        try:
-            return _derived(data, name, where)
-        except (ValueError, TypeError, NotImplementedError) as e:
-            reasons.append(f"at {where}: {e}")
-    raise KeyError(f"{name!r} is derived from no part of this dataset ({'; '.join(reasons)})")
-
-
-def register_field_resolver(resolve):
-    """Lets every algorithm's field argument be text that names no field: ``resolve(data,
-    text)`` gives a ``Field`` on ``data`` for it, or ``None`` when the text is not its kind
-    (the field expressions of ``tack_expr`` register one). The last registered is asked
-    first."""
-    if resolve not in _RESOLVERS:
-        _RESOLVERS.append(resolve)
-
-
-def _resolved(data, text):
-    if not isinstance(text, str) or text in data.fields or text in _DERIVED:
-        return named_field(data, text)
-    for resolve in reversed(_RESOLVERS):
-        field = resolve(data, text)
-        if field is not None:
-            return field
-    return data.fields[text]
+    if key not in kept[1]:
+        kept[1][key] = make()
+    return kept[1][key]
 
 
 def _field(data, field):
-    """A field by name, object or registered resolver (``register_field_resolver``),
-    checked against the dataset before launch."""
+    """A field argument as the ``Field`` it is on ``data``, checked against the dataset
+    before launch: a ``Field``, a name, or an object whose ``on(data)`` gives the
+    ``Field`` on ``data`` (a field expression's), so that one argument means a field
+    in each piece of a ``PartitionedDataSet``."""
     from tack.dataset.dataset import Field, is_field_key
 
-    field = _resolved(data, field) if is_field_key(field) else field
+    if is_field_key(field):
+        field = data.fields[field]
+    elif not isinstance(field, Field) and callable(getattr(field, "on", None)):
+        field = field.on(data)
     if not isinstance(field, Field):
-        raise TypeError("a field argument is a tack.dataset.Field, its name, or text a "
-                        "registered resolver reads")
+        raise TypeError("a field argument is a tack.dataset.Field, its name, or an object "
+                        "whose on(data) gives one")
     if field.space.topology is not data.topology:
         raise ValueError("a field argument belongs to another topology")
     return field
 
 
 def _stored_field(data, field):
-    """``_field``, with a field evaluated where it is read (an expression's) replaced
-    by its values, as its space's ``stored`` gives them: for an algorithm that
-    reduces a field's values rather than reading it through its view."""
+    """``_field``, read as stored values (its space's ``stored``): for an algorithm
+    that reduces a field's values rather than reading it through its view."""
     field = _field(data, field)
-    stored = getattr(field.space, "stored", None)
-    return stored(field, data) if callable(stored) else field
+    return field.space.stored(field, data)
 
 
 def _with_basis(data, field):

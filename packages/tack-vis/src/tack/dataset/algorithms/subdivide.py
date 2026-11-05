@@ -865,8 +865,7 @@ def _order(field):
     space = field.space
     if isinstance(space, (H1, L2)) and not space.varies:
         return space.order
-    # A space evaluated where it is read (an expression's) says how finely to sample it.
-    return getattr(space, "default_subdivision", 1)
+    return space.default_subdivision
 
 
 def default_level(data, *fields):
@@ -1030,10 +1029,7 @@ def _refined_family(data, flags, level, fields, elsewhere, cut, dimension, cell_
     linear = UnstructuredTopology(types, offsets, conn, num_points=points, id_dtype=idt)
     point_fields = {}
     for name, field in fields.items():
-        # A space marked evaluated has no stored values to trace: it is computed where it
-        # is read, here at each lattice point by its value.
-        evaluated = getattr(field.space, "evaluated", False)
-        if not (isinstance(field.space, (H1, L2)) or evaluated) or field.space.varies:
+        if not (isinstance(field.space, (H1, L2)) or field.space.evaluated) or field.space.varies:
             continue
         out = tack.empty((points,), _element(field.values))
         if count:
@@ -1374,14 +1370,15 @@ def level_for(data, field, flags, tolerance):
 
 
 def subdivides(data, field):
-    """Whether cutting ``field`` on ``data`` takes subdivision: a curved geometry or a
-    field above order 1, on tensor cells (segments, quads, pixels, hexahedra,
+    """Whether cutting ``field`` on ``data`` takes subdivision: a curved geometry, a
+    field above order 1, or an evaluated field whose ``default_subdivision`` is above
+    1, on tensor cells (segments, quads, pixels, hexahedra,
     voxels)."""
     space = field.space
     nonlinear = (_order(data.geometry) > 1
                  or (isinstance(space, (H1, L2)) and not space.varies
                      and (space.order > 1 or getattr(space, "tensor", False)))
-                 or getattr(space, "default_subdivision", 1) > 1)
+                 or space.default_subdivision > 1)
     groups = [g for g in data.topology.groups() if g.count]
     dims = {g.shape.DIMENSION for g in groups}
     return nonlinear and len(dims) <= 1 and all(bases.has_bases(g.shape) for g in groups)

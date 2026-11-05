@@ -129,4 +129,3 @@ def test_a_given_gradient_goes_with_its_field_through_filters(backend):
     assert out.num_cells == int(keep.sum())
     assert out.fields["u"].gradient is not None
     np.testing.assert_allclose(td.gradients(out, "u").values.numpy(), given[keep])
-

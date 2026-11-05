@@ -41,7 +41,7 @@ def level_error(surface):
 def test_a_linear_expression_contours_as_its_stored_field(backend):
     data = td.wavelet(10)
     expr = "RTData * 2 + 40 * coordsX"
-    lazy = td.contour(data, expr, 330.0)
+    lazy = td.contour(data, fx.field(expr), 330.0)
     stored = td.contour(data, fx.evaluate(expr, data, at="points"), 330.0)
     assert (lazy.num_cells, lazy.num_points) == (stored.num_cells, stored.num_points)
     np.testing.assert_array_equal(sorted_positions(lazy), sorted_positions(stored))
@@ -50,14 +50,14 @@ def test_a_linear_expression_contours_as_its_stored_field(backend):
 
 
 def test_exact_crossings_are_on_the_level(order2):
-    surface = td.contour(order2, "u * u + u", 0.3)
+    surface = td.contour(order2, fx.field("u * u + u"), 0.3)
     assert surface.num_cells > 0
     assert level_error(surface) < 1e-5
 
 
 def test_lattice_crossings_approach_the_level_as_the_subdivision_grows(order2):
-    coarse = level_error(td.contour(order2, "u * u + u", 0.3, exact=False))
-    fine = level_error(td.contour(order2, "u * u + u", 0.3, subdivision=8, exact=False))
+    coarse = level_error(td.contour(order2, fx.field("u * u + u"), 0.3, exact=False))
+    fine = level_error(td.contour(order2, fx.field("u * u + u"), 0.3, subdivision=8, exact=False))
     assert coarse < 2e-2
     assert fine < coarse / 4
 

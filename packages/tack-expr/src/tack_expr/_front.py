@@ -270,7 +270,7 @@ class _Binder(_Pass):
         super().__init__(text)
         self.data, self.bindings = data, bindings
         self.stored = set(data.fields.keys()) if data is not None else set()
-        self.derived = set(P.td.derived_names()) if data is not None and hasattr(P.td, "derived_names") else set()
+        self.derived = set(P._MESH) if data is not None else set()
         self.depth = 0
 
     def unit_of_stored(self, name, declared=None):

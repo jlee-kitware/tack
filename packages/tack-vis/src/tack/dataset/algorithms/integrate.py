@@ -13,7 +13,7 @@ import numpy as np
 import tack
 from tack import arrays
 from tack.dataset import shapes, units
-from tack.dataset.algorithms._common import _with_basis
+from tack.dataset.algorithms._common import _field, _with_basis
 from tack.dataset.algorithms.cell_geometry import _signed_twice_area
 from tack.dataset.dataset import Field, is_field_key
 from tack.dataset.spaces import H1, L2, Constant, Values
@@ -206,10 +206,12 @@ def quadrature(shape, n):
 
 
 def _order(space):
-    """The polynomial order a space's values carry along an axis: for one evaluated
-    where it is read, twice its inputs' (a product of two)."""
-    if getattr(space, "evaluated", False):
-        return 2 * int(getattr(space, "default_subdivision", 1))
+    """The polynomial order a space's values carry along an axis: an evaluated
+    space's ``integration_order``."""
+    if space.evaluated:
+        if space.integration_order is None:
+            raise TypeError(f"integrate needs {space!r} to give its integration_order")
+        return int(space.integration_order)
     if isinstance(space, (Constant, Values)):
         return 0 if isinstance(space, Constant) or space.on == "cells" else 1
     return max(int(getattr(space, "order", 1)), 0)
@@ -316,22 +318,22 @@ def _no_reference_values(data, field):
 
 def _piece(data, names):
     """One dataset's owned cells' measure and integrals, summed in cell order (f64):
-    ``names`` as ``_names`` gives them."""
-    from tack.dataset.algorithms._common import _field
+    ``names`` as ``_names`` gives them, every ``Field`` carried with the cells kept
+    in one ``visible``."""
     from tack.dataset.algorithms.cell_geometry import cell_geometry
     from tack.dataset.ghosts import owned_values, visible
 
-    given = data
-    data = visible(data)
+    data, *given = visible(data, *(field for _, field in names)) if names else (visible(data),)
     measures = Field(Values(data, "cells"), _top_cells(data, arrays.materialize(
         cell_geometry(data).measure.values)))
     measure = float(np.sum(np.asarray(owned_values(data, measures).numpy(), np.float64)))
     values = {}
-    for name, spec in names:
-        field = visible(given, spec)[1] if isinstance(spec, Field) else _field(data, spec)
-        stored = getattr(field.space, "stored", None)
-        if callable(stored) and not getattr(data.topology, "reference_cells", True):
-            field = stored(field, data)
+    field_units = {}
+    for (name, _), field in zip(names, given):
+        field = _field(data, field)
+        field_units[name] = field.unit
+        if not getattr(data.topology, "reference_cells", True):
+            field = field.space.stored(field, data)
         if not getattr(data.topology, "reference_cells", True):
             space = _with_basis(data, field).space
             if _on_points(space):
@@ -355,14 +357,15 @@ def _piece(data, names):
         per_cell = _cell_values(data, field)
         values[name] = np.asarray(owned_values(data, Field(Values(data, "cells"), per_cell))
                                   .numpy(), np.float64).sum(axis=0)
-    return measure, values
+    return measure, values, field_units
 
 
 @on_inputs_device
 def integrate(data, fields=None):
     """The measure of ``data`` -- its cells' total volume, area or length -- and the
-    integral over it of each of ``fields`` (names; by default every field with a
-    basis or on the cells), as VTK's ``vtkIntegrateAttributes`` gives them:
+    integral over it of each of ``fields`` (names; a mapping of names to field
+    arguments, each integral under its name; by default every field with a basis
+    or on the cells), as VTK's ``vtkIntegrateAttributes`` gives them:
     ``Integrals(measure, measure_unit, values, units)``, ``values[name]`` a float or
     a tuple for a vector field.
 
@@ -370,7 +373,10 @@ def integrate(data, fields=None):
     its own map (``quadrature``: collapsed onto simplices and wedges), with enough
     points for the field's order and the geometry's, so a curved geometry and a
     field of any order (``H1``, ``L2``, point and cell data) integrate exactly, to
-    rounding. Polyhedra, polygons and polylines take their measure from
+    rounding. An evaluated field (an expression's) is integrated through its view
+    in the same way, with points for its space's ``integration_order``: exact where
+    the field is a polynomial of that order, a quadrature approximation where it
+    is not. Polyhedra, polygons and polylines take their measure from
     ``cell_geometry`` and integrate cell data and point data, which is linear on
     their pieces (sub-tetrahedra, triangles, segments), exactly. Only the cells of the mesh's dimension count, as in VTK: a volume's
     integrals leave out its surfaces, lines and vertices. Only owned cells count
@@ -384,51 +390,44 @@ def integrate(data, fields=None):
 
         pieces = list(data)
         names = _names(pieces[0], fields) if pieces else []
-        if any(isinstance(spec, Field) for _, spec in names):
+        if any(isinstance(field, Field) for _, field in names):
             raise TypeError("integrate over a PartitionedDataSet takes fields by name or "
-                            "text: a Field belongs to one partition's topology")
+                            "as objects whose on(piece) gives the piece's: a Field belongs "
+                            "to one partition's topology")
         parts = _over_pieces(data, lambda piece: _piece(piece, names))
-        measure = math.fsum(m for m, _ in parts)
-        values = {name: np.sum([v[name] for _, v in parts], axis=0) for name, _ in names}
+        measure = math.fsum(m for m, _, _ in parts)
+        values = {name: np.sum([v[name] for _, v, _ in parts], axis=0) for name, _ in names}
+        field_units = parts[0][2] if parts else {}
         first = pieces[0] if pieces else None
     else:
         names = _names(data, fields)
-        measure, values = _piece(data, names)
+        measure, values, field_units = _piece(data, names)
         first = data
-    out_units = {name: units.derived((_unit_of(first, spec), 1),
-                                     (_measure_unit(first), 1)) if first is not None else None
-                 for name, spec in names}
+    out_units = {name: units.derived((field_units[name], 1), (_measure_unit(first), 1))
+                 if first is not None else None for name, _ in names}
     return Integrals(measure=measure, measure_unit=_measure_unit(first) if first else None,
                      values={name: (float(v) if np.ndim(v) == 0 else tuple(map(float, v)))
                              for name, v in values.items()},
                      units=out_units)
 
 
-def _unit_of(data, spec):
-    from tack.dataset.algorithms._common import _field
-
-    return spec.unit if isinstance(spec, Field) else _field(data, spec).unit
-
-
 def _names(data, fields):
-    """``[(name, spec)]``: every stored field with a basis or on the cells (and every
-    one evaluated where it is read) by default; or the names, or text a
-    registered resolver reads, each its own name; or a mapping of names to any
-    of these or to ``Field``s."""
-    from tack.dataset.algorithms._common import _field
-
+    """``[(name, field)]``, each field a field argument (``_field``): every stored
+    field with a basis or on the cells by default, the names given, or a mapping's
+    entries. Names and ``Field``s are checked here; an object whose ``on(data)``
+    gives the field is resolved once a piece, where it is integrated."""
     if fields is None:
         return [(name, name) for name, field in data.fields.items()
-                if isinstance(field.space, (H1, L2, Constant))
-                or getattr(field.space, "evaluated", False)
+                if isinstance(field.space, (H1, L2, Constant)) or field.space.evaluated
                 or (isinstance(field.space, Values) and field.space.on in ("points", "cells"))]
     if hasattr(fields, "items"):
         names = list(fields.items())
     else:
         entries = [fields] if is_field_key(fields) or isinstance(fields, Field) else list(fields)
-        if any(isinstance(e, Field) for e in entries):
+        if any(not is_field_key(entry) for entry in entries):
             raise TypeError("integrate names each Field it is given: pass {name: field}")
-        names = [(e, e) for e in entries]
-    for _, spec in names:
-        _field(data, spec)
+        names = [(entry, entry) for entry in entries]
+    for _, field in names:
+        if is_field_key(field) or isinstance(field, Field):
+            _field(data, field)
     return names

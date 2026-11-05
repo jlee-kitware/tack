@@ -110,7 +110,7 @@ def test_lazy_fields_and_contours(data):
     T, U, _, _ = fields(data)
     expr = T * T + fx.mag2(U) * 0.1
     surface = td.contour(data, expr.field(data), 1.0)
-    stored = td.contour(data, "T * T + mag2(U) * 0.1", 1.0)
+    stored = td.contour(data, fx.field("T * T + mag2(U) * 0.1"), 1.0)
     assert (surface.num_cells, surface.num_points) == (stored.num_cells, stored.num_points)
     f = expr.field(data)
     assert f.space.continuous
