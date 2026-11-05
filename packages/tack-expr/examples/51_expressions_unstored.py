@@ -64,7 +64,7 @@ expected = np.sqrt(xc[:, 0] ** 2 + xc[:, 1] ** 2 + W * W) > S
 assert np.array_equal(mask.numpy() > 0.5, expected)
 print(f"threshold kernel calling mag(velocity): {int(expected.sum())} of {data.num_cells} cells faster than {S}")
 
-surface = td.contour(data, "mag(velocity)", S)
+surface = td.contour(data, fx.field("mag(velocity)"), S)
 xs = np.asarray(surface.positions(), np.float64)
 err = float(np.abs(np.hypot(xs[:, 0], xs[:, 1]) - np.sqrt(S * S - W * W)).max())
 print(f"contour of mag(velocity) = {S}: {surface.num_cells} triangles, radius error {err:.1e}")

@@ -202,8 +202,9 @@ of a velocity field on a 192 x 64 x 32 grid take 0.20 ms this way, 0.62 ms as fo
 
 `fx.field(expression, data)` is a `td.Field` that computes the expression wherever an algorithm
 reads it, through its view's `value` and `corner_value`; nothing is stored. Tack's algorithms
-take it as they take a stored field, or the expression's text where a field goes:
-`td.contour(data, "mag(U)", 1.0)` subdivides by its inputs' largest order. Each crossing is the expression's own root along its sub-edge, and an
+take it as they take a stored field, and `fx.field(expression)`, with no dataset, where a field
+goes: they read it on each dataset or piece they are given. `td.contour(data, fx.field("mag(U)"),
+1.0)` subdivides by its inputs' largest order. Each crossing is the expression's own root along its sub-edge, and an
 expression of continuous fields shares its points between cells, so its surface is watertight.
 An expression field bounds its values in each cell by interval arithmetic over its inputs'
 Bernstein bounds, so a subdivided contour refines only the cells that can hold the level; an
