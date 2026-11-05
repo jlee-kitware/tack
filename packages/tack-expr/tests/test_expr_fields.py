@@ -201,8 +201,9 @@ def test_reductions_of_an_expression_are_of_its_values(data):
 
 def test_a_surface_flux_and_a_component_by_text(data):
     data.fields["V"] = fx.evaluate("coords", data, at="points")
-    box = td.surface_normals(td.extract_surface(data))
-    flux = td.integrate(box, ["dot(V, cell_normals)"]).values["dot(V, cell_normals)"]
+    box = td.extract_surface(data)
+    # normals is derived from the surface where it is read, the cells here: nothing stores it.
+    flux = td.integrate(box, ["dot(V, normals)"]).values["dot(V, normals)"]
     volume = td.integrate(data, ["div(V)"]).values["div(V)"]
     np.testing.assert_allclose(flux, volume, rtol=1e-5)                 # the divergence theorem
     np.testing.assert_allclose(td.statistics(data, "V_X").mean, _values("coordsX", data, at="points").mean(),
@@ -210,3 +211,19 @@ def test_a_surface_flux_and_a_component_by_text(data):
     with pytest.raises(KeyError):
         td.statistics(data, "nosuch")
 
+
+def test_normals_are_read_where_the_expression_is(data):
+    box = td.extract_surface(data)
+    made = td.surface_normals(box)
+    np.testing.assert_allclose(_values("normals", box), made.fields["cell_normals"].values.numpy())
+    np.testing.assert_allclose(_values("normals", box, at="points"), made.fields["normals"].values.numpy())
+    np.testing.assert_allclose(_values("normals", data, at="faces"), td.face_geometry(data).normal.values.numpy())
+    np.testing.assert_allclose(_values("measures", data).sum(), 0.3 * 0.25 * 0.4 * data.num_cells, rtol=1e-5)
+
+
+def test_a_stored_field_comes_before_a_derived_one(data):
+    box = td.extract_surface(data)
+    flipped = -td.surface_normals(box).fields["cell_normals"].values.numpy()
+    box.fields["normals"] = td.Field(td.Values(box, "cells"), _vectors(flipped))
+    np.testing.assert_allclose(_values("normals", box), flipped)
+    np.testing.assert_allclose(_values("mag(normals)", box, at="points"), 1.0, rtol=1e-6)

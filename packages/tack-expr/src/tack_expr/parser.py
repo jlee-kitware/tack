@@ -157,6 +157,23 @@ def _entity_numbered_h1(field):
     return isinstance(field.space, td.H1) and getattr(field.space, "dofs", None) is None
 
 
+# Where each mode reads a field: a derived field (td.named_field) is the one there.
+_AT = {"cells": "cells", "corners": "cells", "faces": "faces", "nodes": "points",
+       "pointloop": "points"}
+
+
+def _named_field(data, name, at=None):
+    """The field a name stands for on data, read at ``at``: stored, or derived from the
+    dataset there (td.named_field: normals, measures, centroids)."""
+    named = getattr(td, "named_field", None)
+    return named(data, name, at) if named is not None else data.fields[name]
+
+
+def _derived(name):
+    names = getattr(td, "derived_names", None)
+    return names is not None and name in names()
+
+
 class _Compiler:
     def __init__(self, text, data, mode, continuous_only=False):
         self.text, self.data, self.mode = text, data, mode
@@ -207,6 +224,8 @@ class _Compiler:
     def _named(self, name):
         if name in self.bindings:
             return self.bindings[name]
+        if _derived(name) and name not in self.data.fields:
+            return None
         try:
             return self.data.fields[name]
         except (KeyError, ValueError, TypeError):
@@ -236,10 +255,11 @@ class _Compiler:
         if name in self.bindings:
             field = self.bindings[name]
             return lambda d, m: field
-        return lambda d, m: d.fields[name]
+        at = _AT.get(self.mode)
+        return lambda d, m: _named_field(d, name, at)
 
     def has_field(self, name):
-        return name in self.bindings or name in self.data.fields
+        return name in self.bindings or name in self.data.fields or _derived(name)
 
     @staticmethod
     def once(key, make):
@@ -327,7 +347,8 @@ class _Compiler:
         if not self.has_field(name):
             self.error(f"unknown field '{name}'", pos)
         self.fields_read.add(name)
-        return self.bindings[name] if name in self.bindings else self.data.fields[name]
+        return (self.bindings[name] if name in self.bindings
+                else _named_field(self.data, name, _AT.get(self.mode)))
 
     def field(self, name, pos, field=None, key=None, getter=None):
         """A field read at the output location, or an error saying what to use."""
