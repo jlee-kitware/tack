@@ -142,7 +142,7 @@ def _fresh_boundary(data, fields):
         return None
     if topology._boundary is not None:
         surface, cells, points = topology._boundary
-        return carry(data, surface, points=Take(points), cells=Pieces(cells), fields=fields)
+        return _on_boundary(data, surface, fields, points=Take(points), cells=Pieces(cells))
     groups = [g for g in topology.groups() if g.shape.NUM_FACES and g.shape.DIMENSION == 3]
     starts = np.concatenate([[0], np.cumsum([g.count * g.shape.NUM_FACES
                                              for g in groups])]).astype(int)
@@ -204,7 +204,24 @@ def _fresh_boundary(data, fields):
     count, points = _used_points(connectivity, data.num_points, idt)
     surface = UnstructuredTopology(types, offsets, connectivity, num_points=count)
     topology._boundary = (surface, cells, points)
-    return carry(data, surface, points=Take(points), cells=Pieces(cells), fields=fields)
+    return _on_boundary(data, surface, fields, points=Take(points), cells=Pieces(cells))
+
+
+def _on_boundary(data, surface, fields, **maps):
+    """The boundary ``surface`` with ``data``'s fields carried by ``maps``. Its
+    geometry is part of ``data``'s mesh and kept with it (``mesh_kept``), so a
+    repeated call on the same mesh gives the same surface geometry, and what is
+    derived from that (``normals``, ``measures``) is derived once."""
+    from tack.dataset.algorithms._common import mesh_kept
+
+    kept = mesh_kept(data)
+    held = kept.get("boundary")
+    if held is not None and held[0] is surface:
+        out = carry(data, surface, geometry=held[1], fields=fields, **held[2])
+    else:
+        out = carry(data, surface, fields=fields, **maps)
+    kept["boundary"] = (surface, out.geometry, maps)
+    return out
 
 
 @on_inputs_device
@@ -260,6 +277,14 @@ def extract_surface(data, faces=None, fields=None):
         fresh = _fresh_boundary(data, fields)
         if fresh is not None:
             return fresh
+        from tack.dataset.algorithms._common import mesh_kept
+
+        held = mesh_kept(data).get("boundary")
+        if (held is not None and "faces_to_cells" in held[2]
+                and not (data.topology.dimension == 3 and _has_order_two(data, fields))):
+            return _on_boundary(data, held[0], fields, **held[2])
+    boundary = faces is None
+    if boundary:
         from tack.dataset.algorithms.boundary_faces import boundary_faces
         faces = boundary_faces(data)
     ids = _face_ids(data, faces)
@@ -295,8 +320,10 @@ def extract_surface(data, faces=None, fields=None):
         return _on_used_points(out)
     count, points = _used_points(connectivity, data.num_points, idt)
     surface = UnstructuredTopology(types, offsets, connectivity, num_points=count)
-    return carry(data, surface, points=Take(points), cells=Pieces(cells),
-                 faces_to_cells=Take(ids), fields=fields)
+    maps = {"points": Take(points), "cells": Pieces(cells), "faces_to_cells": Take(ids)}
+    if boundary:
+        return _on_boundary(data, surface, fields, **maps)
+    return carry(data, surface, fields=fields, **maps)
 
 
 @tack.kernel

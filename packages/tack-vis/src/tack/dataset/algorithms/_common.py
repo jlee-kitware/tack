@@ -140,17 +140,25 @@ def _same_space(*fields):
 
 
 _RESOLVERS = []
-_DERIVED = {}
+_DERIVED = {}             # name -> {location: compute}
+_LOCATIONS = ("points", "cells", "faces")
 
 
-def register_derived_field(name, compute):
-    """Lets ``name`` stand for a field a dataset makes from itself when it stores none
-    of that name: ``compute(data)`` gives a ``Field`` on ``data``, made the first
-    time it is asked for and kept with the dataset while its geometry is the same.
-    A stored field of the name always comes first. Tack registers the surface
-    normals (``normals``, ``cell_normals``) and each cell's measure and centroid
-    (``cell_measures``, ``cell_centroids``)."""
-    _DERIVED[name] = compute
+def register_derived_field(name, compute, at):
+    """Lets ``name`` stand, at ``at`` (``"points"``, ``"cells"`` or ``"faces"``), for a
+    field a dataset makes from itself when it stores none of that name there:
+    ``compute(data)`` gives the ``Field`` on ``data``, a function of its mesh:
+    made the first time it is asked for and kept with the mesh (``mesh_kept``),
+    so every dataset on the same geometry shares it and it is made again when
+    the mesh changes. ``extract_surface`` of the same mesh gives the same surface
+    geometry, and so the same normals. One name
+    is one quantity, registered at each location it has: Tack registers
+    ``normals`` (a surface's at its points and cells, ``surface_normals``'; every
+    mesh's at its faces, ``face_geometry``'s), ``measures`` (each cell's volume, area
+    or length; each face's area) and ``centroids`` (each cell's)."""
+    if at not in _LOCATIONS:
+        raise ValueError(f"at is one of {_LOCATIONS}, not {at!r}")
+    _DERIVED.setdefault(name, {})[at] = compute
 
 
 def derived_names():
@@ -158,19 +166,66 @@ def derived_names():
     return tuple(_DERIVED)
 
 
-def named_field(data, name):
-    """The field ``name`` names on ``data``: the one stored under it, else the one
-    derived from the dataset (``register_derived_field``); a ``KeyError`` for
-    neither."""
-    if not isinstance(name, str) or name in data.fields or name not in _DERIVED:
+def _location(field):
+    from tack.dataset.spaces import H1, L2, Constant, Values
+
+    space = field.space
+    if isinstance(space, H1) or (isinstance(space, Values) and space.on == "points"):
+        return "points"
+    if isinstance(space, (Constant, L2)) or (isinstance(space, Values) and space.on == "cells"):
+        return "cells"
+    if isinstance(space, Values) and space.on == "faces":
+        return "faces"
+    return None
+
+
+def mesh_kept(data):
+    """A dict for what is computed from ``data``'s mesh alone (its derived fields,
+    its boundary's geometry), kept with the mesh: shared by every dataset on the
+    same geometry (and so the same topology), and emptied when Tack has written
+    the positions since (``arrays._revision``), so it changes when the mesh does."""
+    geometry = data.geometry
+    revision = arrays._revision(geometry.values)
+    kept = geometry.__dict__.get("_mesh_kept")
+    if kept is None or kept[0] != revision:
+        kept = geometry.__dict__["_mesh_kept"] = (revision, {})
+    return kept[1]
+
+
+def _derived(data, name, at):
+    kept = mesh_kept(data)
+    if (name, at) not in kept:
+        kept[(name, at)] = _DERIVED[name][at](data)
+    return kept[(name, at)]
+
+
+def named_field(data, name, at=None):
+    """The field ``name`` names on ``data``, read at ``at`` (``"points"``, ``"cells"``,
+    ``"faces"``, or None for wherever it is). A field stored under the name there
+    comes first, then the one the dataset derives there
+    (``register_derived_field``), then one stored under the name elsewhere. With
+    no ``at``, the stored field, else the derived one at the first location it is
+    registered at that the dataset has. A ``KeyError`` for none."""
+    if not isinstance(name, str) or name not in _DERIVED:
         return data.fields[name]
-    made = data.__dict__.setdefault("_derived_fields", {})
-    hit = made.get(name)
-    if hit is not None and hit[0] is data.geometry:
-        return hit[1]
-    field = _DERIVED[name](data)
-    made[name] = (data.geometry, field)
-    return field
+    stored = data.fields.named(name)
+    places = _DERIVED[name]
+    if at is not None:
+        for field in stored:
+            if _location(field) == at:
+                return field
+        if at in places:
+            return _derived(data, name, at)
+        return data.fields[name]
+    if stored:
+        return data.fields[name]
+    reasons = []
+    for where in places:
+        try:
+            return _derived(data, name, where)
+        except (ValueError, TypeError, NotImplementedError) as e:
+            reasons.append(f"at {where}: {e}")
+    raise KeyError(f"{name!r} is derived from no part of this dataset ({'; '.join(reasons)})")
 
 
 def register_field_resolver(resolve):

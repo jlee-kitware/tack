@@ -212,7 +212,7 @@ class _Ranges:
         return f"rl{k}", f"rh{k}"
 
     def field(self, name):
-        field = self.bindings.get(name) or (P._named_field(self.data, name)
+        field = self.bindings.get(name) or (P._named_field(self.data, name, "cells")
                                             if name in self.data.fields or P._derived(name) else None)
         if field is None or P._type(field) != P.S:
             return None

@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) Kitware Inc.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Fields a dataset derives from itself when it stores none of the name."""
+"""Fields a dataset derives from itself where it stores none of the name: one name,
+read at the location asked for."""
 
 import numpy as np
 import pytest
@@ -11,27 +12,68 @@ import tack.dataset as td
 from tack.dataset.algorithms import _common
 
 
-def _box():
-    return td.extract_surface(td.uniform_grid((4, 3, 3), spacing=(0.5, 0.5, 0.5)))
+def _grid():
+    return td.uniform_grid((4, 3, 3), spacing=(0.5, 0.5, 0.5))
 
 
-def test_a_surface_derives_its_normals(backend):
-    box = _box()
+def test_normals_at_each_location(backend):
+    box = td.extract_surface(_grid())
     made = td.surface_normals(box)
-    for name in ("normals", "cell_normals"):
-        np.testing.assert_array_equal(td.named_field(box, name).values.numpy(),
-                                      made.fields[name].values.numpy())
-    assert "cell_normals" not in box.fields
-    assert td.named_field(box, "cell_normals") is td.named_field(box, "cell_normals")
-    area = td.integrate(box, ["cell_measures"])
-    np.testing.assert_allclose(area.measure, 2 * (1.5 * 1.0 + 1.5 * 1.0 + 1.0 * 1.0), rtol=1e-6)
+    np.testing.assert_array_equal(td.named_field(box, "normals", "points").values.numpy(),
+                                  made.fields["normals"].values.numpy())
+    np.testing.assert_array_equal(td.named_field(box, "normals", "cells").values.numpy(),
+                                  made.fields["cell_normals"].values.numpy())
+    solid = _grid()
+    np.testing.assert_array_equal(td.named_field(solid, "normals", "faces").values.numpy(),
+                                  td.face_geometry(solid).normal.values.numpy())
+    assert "normals" not in box.fields
+    assert td.named_field(box, "normals", "cells") is td.named_field(box, "normals", "cells")
+    np.testing.assert_allclose(td.named_field(box, "measures", "cells").values.numpy().sum(), 8.0,
+                               rtol=1e-6)
 
 
-def test_a_stored_field_comes_first(backend):
-    box = _box()
-    values = td.surface_normals(box).fields["cell_normals"].values
-    box.fields["cell_normals"] = td.Field(td.Values(box, "cells"), values)
-    assert td.named_field(box, "cell_normals") is box.fields["cell_normals"]
+def test_a_field_stored_at_the_location_comes_first(backend):
+    box = td.extract_surface(_grid())
+    mine = td.Field(td.Values(box, "cells"), td.surface_normals(box).fields["cell_normals"].values)
+    box.fields["normals"] = mine
+    assert td.named_field(box, "normals", "cells") is mine
+    # Stored at the cells only: at the points, the derived ones.
+    assert td.named_field(box, "normals", "points") is not mine
+    assert td.named_field(box, "normals") is mine
+
+
+def test_no_location_takes_the_first_the_dataset_has(backend):
+    solid = _grid()
+    # A solid has no surface normals at its points or cells: its faces'.
+    assert td.named_field(solid, "normals").space.on == "faces"
+
+
+def test_a_boundary_of_the_same_geometry_derives_its_normals_once(backend):
+    solid = td.tetrahedralize(_grid())
+    for volume in (_grid(), solid):
+        first = td.extract_surface(volume)
+        again = td.extract_surface(volume)
+        assert again.geometry is first.geometry
+        assert td.named_field(again, "normals", "cells") is td.named_field(first, "normals", "cells")
+    moved = td.extract_surface(_grid())
+    assert td.named_field(moved, "normals", "cells") is not td.named_field(first, "normals", "cells")
+
+
+def test_mesh_metrics_change_when_the_mesh_does(backend):
+    tets = td.tetrahedralize(_grid())
+    solid = td.DataSet(tets.topology, tets.geometry.values.numpy())
+    before = td.named_field(solid, "measures", "cells")
+    surface = td.extract_surface(solid)
+    normals = td.named_field(surface, "normals", "cells")
+    stretched = solid.geometry.values.numpy() * np.float32(2.0)
+    tack.copyto(solid.geometry.values, stretched)
+    after = td.named_field(solid, "measures", "cells")
+    assert after is not before
+    np.testing.assert_allclose(after.values.numpy().sum(), 8 * before.values.numpy().sum(),
+                               rtol=1e-5)
+    again = td.extract_surface(solid)
+    assert again.geometry is not surface.geometry
+    assert td.named_field(again, "normals", "cells") is not normals
 
 
 def test_registered_names_and_misses(backend):
@@ -41,14 +83,16 @@ def test_registered_names_and_misses(backend):
         calls.append(1)
         return td.Field(td.Values(data, "cells"), tack.array(np.arange(data.num_cells, dtype=np.float32)))
 
-    td.register_derived_field("cell_index", compute)
+    td.register_derived_field("cell_index", compute, at="cells")
     try:
-        box = _box()
+        box = td.extract_surface(_grid())
         assert "cell_index" in td.derived_names()
         assert td.statistics(box, "cell_index").max == box.num_cells - 1
         td.statistics(box, "cell_index")
         assert len(calls) == 1
         with pytest.raises(KeyError):
             td.named_field(box, "nosuch")
+        with pytest.raises(ValueError):
+            td.register_derived_field("x", compute, at="edges")
     finally:
         del _common._DERIVED["cell_index"]
