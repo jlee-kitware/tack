@@ -214,15 +214,20 @@ def _measure_unit(data):
     return None if k is None else units.derived((data.unit, k))
 
 
-def _time_unit(data, velocity):
-    """The unit of time a particle moved by ``velocity`` (a field or its name) keeps:
-    the spatial unit over the velocity's, or ``None`` if either is unknown. Over a
-    partitioned dataset, every rank's pieces'."""
+def _time_unit(data, velocity, fields=None):
+    """The unit of time a particle moved by ``velocity`` (a field argument) keeps: the
+    spatial unit over the velocity's, or ``None`` if either is unknown. Over a
+    partitioned dataset, every rank's pieces' (``fields``, each piece's velocity, when
+    the caller has resolved them already)."""
     from tack.dataset import units
     from tack.dataset.partitioned import PartitionedDataSet
 
     if isinstance(data, PartitionedDataSet):
-        every = data.world._allgather([piece.fields[velocity].unit for piece in data])
+        if fields is None:
+            from tack.dataset.partitioned import fields_of
+
+            fields = fields_of(data, velocity, "advection")
+        every = data.world._allgather([f.unit for f in fields])
         speed = units.common("the pieces' velocity", [u for part in every for u in part])
         return units.derived(_spatial_unit(data), (speed, -1))
     return units.derived(data.unit, (_field(data, velocity).unit, -1))
