@@ -1213,6 +1213,13 @@ def _scalar(data, value):
     return np.float64(value) if data.dtype is tack.f64 else np.float32(value)
 
 
+def _incidence(code):
+    """The cell incidence generated code reads through its domain view (``faces``,
+    ``edges``), which ``domain_view`` and ``td.for_each`` give a view only when asked."""
+    return tuple(kind for kind, read in (("faces", "dom.face_"), ("edges", "dom.edge_"))
+                 if read in code)
+
+
 class Compiled:
     """Compiled expressions: their kernels, output location and arguments.
 
@@ -1227,6 +1234,7 @@ class Compiled:
         self.args, self.consts, self.types, self.names = args, consts, types, names
         self.sources, self.kernels = {}, {}
         self.unit = None
+        self.incidence = ()
 
     @property
     def type(self):
@@ -1274,13 +1282,14 @@ class Compiled:
                 variant, nodes = _node_variant(self.space, group.shape)
                 node_list = tack.array(np.asarray(nodes if hasattr(nodes, "__len__") else [0], dtype=np.int32))
                 node_count = len(nodes) if hasattr(nodes, "__len__") else int(nodes or 0)
-                self.kernel(variant)(data.domain_view("cells", group),
+                self.kernel(variant)(data.domain_view("cells", group, incidence=self.incidence),
                                      *[p.view(group) if kind == "field" else p
                                        for kind, p in zip(kinds, payloads)],
                                      results[0].view(group), node_list, node_count, *outs, *consts)
         else:
             domain = "faces" if self.mode == "faces" else "cells"
-            td.for_each(self.kernel("main"), data, domain, *payloads, *outs, *consts)
+            td.for_each(self.kernel("main"), data, domain, *payloads, *outs, *consts,
+                        incidence=self.incidence if domain == "cells" else ())
         return results[0] if self.names is None else dict(zip(self.names, results))
 
 
@@ -1340,6 +1349,7 @@ def _compile(texts, data, at, replace_invalid, names):
     text = texts[0] if names is None else "; ".join(f"{n}={t}" for n, t in zip(names, texts))
     compiled = Compiled(text, make, mode, space, list(c.args), list(c.consts), types, names)
     compiled.fields = sorted(c.fields_read)
+    compiled.incidence = _incidence("\n".join(lines))
     return compiled
 
 
@@ -1481,6 +1491,7 @@ class Function:
     def __init__(self, text, cls, args, consts, rtype, source, domain="cells"):
         self.text, self.cls, self.args = text, cls, args
         self.consts, self.type, self.source, self.domain = consts, rtype, source, domain
+        self.incidence = _incidence(source)
 
     def resolve(self, data):
         memo = {}
@@ -1523,7 +1534,9 @@ def for_each(kernel, data, fn, *args):
     fields += [a for a in args if isinstance(a, td.Field)]
     for group in data.launch_groups(fn.domain, fields):
         if group.count:
-            kernel(data.domain_view(fn.domain, group), fn.bind(data, group, payloads),
+            kernel(data.domain_view(fn.domain, group,
+                                    incidence=fn.incidence if fn.domain == "cells" else ()),
+                   fn.bind(data, group, payloads),
                    *[a.view(group) if isinstance(a, td.Field) else a for a in args])
 
 
