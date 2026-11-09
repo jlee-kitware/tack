@@ -69,7 +69,8 @@ class ExpressionSpace(Space):
         if group is None:
             return {}
         data = self._data
-        out = {"dom": data.domain_view("cells", group), "no_hessian": float("nan")}
+        out = {"dom": data.domain_view("cells", group, incidence=self._incidence),
+               "no_hessian": float("nan")}
         for prefix, args, consts in self._parts:
             memo = {}
             for k, (kind, get) in enumerate(args):
@@ -166,6 +167,7 @@ def _field(text, data):
     source = imports + "\n\nclass Mixin:\n" + methods
     space = ExpressionSpace(data, key=next(_keys))
     space._mixin = P._load(source, "Mixin")
+    space._incidence = P._incidence(source)
     space._data = data
     space._parts = parts
     space.continuous = continuous
