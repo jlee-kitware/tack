@@ -25,8 +25,7 @@ within 5% of a hand-written kernel, on point, cell, face and higher-order finite
 - **Exact gradients.** `grad()` differentiates a field through its basis and the geometry's
   Jacobian, so it is exact for fields of any order and for curved cells.
 - **Small and native.** The compiler is about 4,400 lines of Python in its own package, `tack-expr`.
-  The generated kernel is ordinary Tack source run by `td.for_each` on any Tack backend. Everything
-  except contours of expressions runs on Tack's main as it is.
+  The generated kernel is ordinary Tack source run by `td.for_each` on any Tack backend.
 - **Few recompiles.** Constants are kernel arguments. Editing `2.5` to `7.0` reuses the compiled
   kernel.
 
@@ -95,12 +94,9 @@ code against `tack.dataset`'s views; changes to those views would reach it. Its 
 deliberately small, with no loops, statements or user functions. A kernel with second derivatives
 compiles once, in 0.6 s at order 3 and up to about 5 s for large expressions.
 
-**Packaging.** `tack-expr` is a package of its own and runs on Tack's main, with one exception:
-contours of expressions (shared points for continuous expressions, and subdivision for higher
-orders) rest on about ten lines in `contour` and `subdivide`, which come with tack-expr's pull
-request. So it can ship separately unless Tack wants it in core, and the question for Tack's
-maintainers is how far Tack means to reach toward end users: as a developer toolkit, expressions are
-a convenience; under ParaView-style tools, Catalyst and agents, they are a core layer.
+**Packaging.** `tack-expr` is a package of the Tack workspace, `packages/tack-expr`, beside
+`tack-core` and `tack-vis`. It uses only their public interfaces: a field argument may be an
+expression (`fx.field(text)`), and Tack evaluates it where it reads it.
 
 The same compiler takes expressions written with Python operators on `td.Field`s, `(U + V /
 fx.curl(W)).eval(data)`, described under Python operators. Units, the field dictionary and complex
@@ -529,35 +525,17 @@ ms on the same grid, against 0.39 ms for `td.project` and a second kernel.
 - **Metal.** Tack's Metal backend has no float64, so float64 expressions run on the other backends
   only.
 
-## Plan
+## Status
 
-Everything in this document is implemented and tested. It lives on the `field-expression-support`
-branch of [jlee-kitware/tack](https://github.com/jlee-kitware/tack/tree/field-expression-support), a
-fork of Tack, on Tack's main. The Tack core changes it relies on were four pull requests, now
-merged:
+Everything in this document is implemented and tested. The Tack changes it relies on are in
+Tack's main: the code generator and interop fixes (#257, #258, #298), the derivatives and
+spaces (#259, #260, #299), and the field interface (#355, #356, #357, #362, #363).
 
-| Where | What |
-| --- | --- |
-| #257 `core/if-hoist-types` | the C-family code generator types variables first assigned inside an `if` in linear time |
-| #258 `fix/vtk-char-signedness` | VTK interop reads a `vtkCharArray` as signed or unsigned by its range |
-| #259 `vis/world-hessian` | `shape_hessian`, `parametric_hessian` and `geometry_curvature`; public `world_gradient`, `world_hessian` and `world_jet` |
-| #260 `vis/hdiv-hcurl` | the `HDiv` and `HCurl` spaces |
-| #298 `core/template-compile`, merged | template methods passing a held template to another held template's method, taking only the synthetic parameters they read, and resolved only when a kernel reaches them; CUDA's contractions written as explicit fused multiply-adds |
-| #299 `vis/given-gradients`, merged | `Field(..., gradient=)`; `world_gradient` and `world_jet` from the field's view |
-| #355 `vis/carry-given-gradients` | filters carrying a field's given gradient |
-| #356 `vis/integrate-fields` | `integrate` taking Fields by name |
-| #357 `vis/field-protocol` | a field argument may be an object whose `on(data)` gives the `Field` |
-| `vis/evaluated-fields` | fields evaluated where they are read, declared on `Space`: `evaluated`, `continuous`, `default_subdivision`, `integration_order`, `rebind`, `stored` |
-| `vis/mesh-metrics` | `cell_geometry`, `face_geometry` and `surface_normals` kept with the mesh |
-| `packages/tack-expr` on `field-expression-support` | the compiler, derivatives (of tensors too), `compile_many`, expression fields with bounds and their contours, ghost refresh, the Python operators, units on every entry point, the field dictionary, tensors and complex values (a complex result as two fields); tests, examples and this document. |
+What is left:
 
-The next steps:
-
-1. **The field interface merged**: #355, #356, #357, `vis/evaluated-fields` and `vis/mesh-metrics`.
-2. **tack-expr as a pull request**, on them.
-3. **Vector spaces above order 1 on tetrahedra**, with face and interior moments in barycentric
+1. **Vector spaces above order 1 on tetrahedra**, with face and interior moments in barycentric
    bases.
-4. **Every rank in the ghost exchange.** A rank that owns no pieces skips the `td.update_ghosts`
+2. **Every rank in the ghost exchange.** A rank that owns no pieces skips the `td.update_ghosts`
    call that `update_ghosts=True` makes, because it names the fields from a local piece; naming them
    from the dataset's field names would keep every rank in the exchange. Tack tests the exchange
    itself across ranks.

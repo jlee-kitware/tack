@@ -28,6 +28,7 @@ import contextlib
 import contextvars
 import hashlib
 import importlib.util
+import math
 import os
 import re
 import time
@@ -123,11 +124,18 @@ def _kind(field):
     return type(space).__name__
 
 
+def _width(values):
+    """Scalars per value, read from the dtype when there are no values to count."""
+    size = getattr(values, "size", 0)
+    if size:
+        return getattr(values, "scalar_size", size) // size
+    return math.prod(getattr(getattr(values, "dtype", None), "shape", None) or ())
+
+
 def _is_vector(field):
     if _kind(field) in ("hdiv", "hcurl"):
         return True
-    values = field.values
-    return getattr(values, "scalar_size", 0) == 3 * getattr(values, "size", -1)
+    return _width(field.values) == 3
 
 
 def _type(field):
@@ -135,16 +143,14 @@ def _type(field):
     components."""
     if _kind(field) in ("hdiv", "hcurl"):
         return V
-    values = field.values
-    size = getattr(values, "size", 0) or 1
-    return {3: V, 6: M, 9: M}.get(getattr(values, "scalar_size", size) // size, S)
+    return {3: V, 6: M, 9: M}.get(_width(field.values), S)
 
 
 def _as_matrix(field, code):
     """A tensor field's value as a mat3, from the components it is stored as."""
     if getattr(getattr(field.values, "dtype", None), "shape", None) == (3, 3):
         return None
-    n = field.values.scalar_size // field.values.size
+    n = _width(field.values)
     c = [f"{code}[{k}]" for k in range(n)]
     if n == 9:
         return f"tack.mat3({', '.join(c)})"
@@ -223,11 +229,24 @@ def _derived(name):
     return name in _MESH
 
 
+def _renamed(kind, val, rename):
+    """A name token's text with rename applied, its _X, _Y or _Z component kept."""
+    if kind == "str":
+        return f"{val[0]}{_renamed('name', val[1:-1], rename)}{val[-1]}"
+    if kind != "name":
+        return val
+    if val in rename:
+        return rename[val]
+    base, _, comp = val.rpartition("_")
+    return f"{rename[base]}_{comp}" if comp in ("X", "Y", "Z") and base in rename else val
+
+
 class _Compiler:
-    def __init__(self, text, data, mode, continuous_only=False):
+    def __init__(self, text, data, mode, continuous_only=False, reference=None):
         self.text, self.data, self.mode = text, data, mode
         self.continuous_only = continuous_only
-        self.reference = getattr(data.topology, "reference_cells", True)
+        self.reference = (getattr(data.topology, "reference_cells", True) if reference is None
+                          else reference)
         self.toks = self._tokenize(text)
         self.k = 0
         self.lines = []
@@ -264,8 +283,17 @@ class _Compiler:
                 continue
             if name in within:
                 raise ExprError(f"'{name}' is defined in terms of itself", pos, self.text)
-            self.bindings = {**self.bindings, **getattr(stored.space, "names", {})}
             inner = self._tokenize(stored.space.text)[:-1]
+            rename = {}
+            for n, f in getattr(stored.space, "names", {}).items():
+                if self.bindings.get(n, f) is not f:      # an outer name bound to another field
+                    k = 1
+                    while f"{n}_{k}" in self.bindings:
+                        k += 1
+                    rename[n] = f"{n}_{k}"
+                self.bindings = {**self.bindings, rename.get(n, n): f}
+            if rename:
+                inner = [(k, _renamed(k, v, rename), p) for k, v, p in inner]
             out += [("op", "(", pos), *[(k, v, pos) for k, v, _ in
                                         self._expand(inner, (*within, name))], ("op", ")", pos)]
         return out
@@ -507,8 +535,9 @@ class _Compiler:
         if links is None:
             # A pass through td.project, which averages any source.
             projected = td.project(self.data, field, td.H1(self.data))
+            source = self.by_name(name)
             get = self.once(f"points:{name}",
-                            lambda d, m: td.project(d, d.fields[name], td.H1(d)))
+                            lambda d, m: td.project(d, source(d, m), td.H1(d)))
             return self.field(name, pos, projected, f"points:{name}", get)
         offsets, cells_of_entry = links
         lo = self.raw("links:offsets", lambda d, m: offsets)
@@ -556,8 +585,9 @@ class _Compiler:
         field = self.lookup(name, pos)
         get = self.by_name(name)
         if _kind(field) == "basis" and not isinstance(field.space, td.Constant):
+            source = get
             get = self.once(f"cells:{name}",
-                            lambda d, m: td.project(d, d.fields[name], td.Constant(d)))
+                            lambda d, m: td.project(d, source(d, m), td.Constant(d)))
         elif _kind(field) not in ("basis", "values-cells"):
             self.error(f"{fn}() takes cell data", pos)
         a = self.raw(f"{name}:cells", get)
@@ -980,7 +1010,12 @@ class _Compiler:
 
 # --- pre-passes shared across expressions ---------------------------------
 
-_links_cache = {}
+def _kept(topology, key, make):
+    """make()'s result, kept on the topology so it goes when the topology does."""
+    kept = topology.__dict__.setdefault("_tack_expr", {})
+    if key not in kept:
+        kept[key] = make()
+    return kept[key]
 
 
 def _components(field):
@@ -990,7 +1025,7 @@ def _components(field):
     rows = _gradient_rows(getattr(field, "gradient", None))
     parts = []
     for k in range(3):
-        part = tack.empty((field.space.size,), tack.arrays.dtype_of(values))
+        part = tack.empty((field.space.size,), tack.arrays.dtype_of(values), device=field.device)
         component(values, k, part, field.space.size)
         if rows is None:
             parts.append(td.Field(field.space, part))
@@ -1007,7 +1042,7 @@ def _gradient_rows(given):
     flat = np.asarray(values.numpy()).reshape(given.space.size, 9)
     out = []
     for k in range(3):
-        row = tack.empty((given.space.size,), tack.vec3(values.scalar_dtype))
+        row = tack.empty((given.space.size,), tack.vec3(values.scalar_dtype), device=given.device)
         tack.copyto(row, np.ascontiguousarray(flat[:, 3 * k:3 * k + 3]))
         out.append(td.Field(given.space, row, given.unit))
     return out
@@ -1032,7 +1067,7 @@ def _tensor_components(field):
         flat = np.stack([xx, xy, xz, xy, yy, yz, xz, yz, zz], axis=1)
     parts = []
     for k in range(9):
-        part = tack.empty((field.space.size,), scalar)
+        part = tack.empty((field.space.size,), scalar, device=field.device)
         tack.copyto(part, np.ascontiguousarray(flat[:, k]))
         parts.append(td.Field(field.space, part))
     return parts
@@ -1051,11 +1086,9 @@ def _grid_dims(data):
     dims += [1] * (3 - len(dims))
     if any(dims[a] == 1 and any(d > 1 for d in dims[a + 1:]) for a in range(3)):
         return None
-    key = ("grid", id(topology))
-    if key not in _links_cache:
-        cells = [max(d - 1, 1) for d in dims]
-        _links_cache[key] = (topology, tack.array(np.array(dims + cells, dtype=np.int32)))
-    return _links_cache[key][1]
+    cells = [max(d - 1, 1) for d in dims]
+    return _kept(topology, "grid", lambda: tack.array(np.array(dims + cells, dtype=np.int32),
+                                                      device=topology.device))
 
 
 def _point_links(data):
@@ -1067,35 +1100,33 @@ def _point_links(data):
         return _polyhedral_links(topology)
     if not isinstance(topology, UnstructuredTopology) or not getattr(topology, "reference_cells", True):
         return None
-    key = ("links", id(topology))
-    if key not in _links_cache:
+    def make():
         offsets, entries = topology.point_links()
         start_of, total = corner_layout(topology)
         n = entries.shape[0]
-        cells = tack.empty((n,), tack.i32)
+        cells = tack.empty((n,), tack.i32, device=topology.device)
         for group in topology.groups():
             if group.count and n:
                 start = start_of[group]
                 view = group.view()
                 entry_cells(view, entries, cells, n, start, start + group.count * group.shape.NUM_POINTS)
-        _links_cache[key] = (topology, (offsets, cells))
-    return _links_cache[key][1]
+        return offsets, cells
+    return _kept(topology, "links", make)
 
 
 def _polyhedral_links(topology):
     """(offsets, cell of each link) for polyhedra or polygons: point_links() indexes each
     cell's point list in cell_points(), so each list position is mapped to its cell."""
-    key = ("links", id(topology))
-    if key not in _links_cache:
+    def make():
         offsets, entries = topology.point_links()
         point_offsets, point_ids = topology.cell_points()
-        cell_of_position = tack.empty((point_ids.shape[0],), tack.i32)
+        cell_of_position = tack.empty((point_ids.shape[0],), tack.i32, device=topology.device)
         position_cells(point_offsets, cell_of_position, topology.num_cells)
-        cells = tack.empty((entries.shape[0],), tack.i32)
+        cells = tack.empty((entries.shape[0],), tack.i32, device=topology.device)
         if entries.shape[0]:
             gather(cell_of_position, entries, cells, entries.shape[0])
-        _links_cache[key] = (topology, (offsets, cells))
-    return _links_cache[key][1]
+        return offsets, cells
+    return _kept(topology, "links", make)
 
 
 # --- kernel assembly ------------------------------------------------------
@@ -1182,8 +1213,10 @@ def _load(source, name):
         os.makedirs(CACHE_DIR, exist_ok=True)
         path = os.path.join(CACHE_DIR, f"fx_{key}.py")
         if not os.path.exists(path):
-            with open(path, "w") as f:
+            tmp = f"{path}.{os.getpid()}.{id(source)}.tmp"
+            with open(tmp, "w") as f:
                 f.write(source)
+            os.replace(tmp, path)
         else:
             try:
                 os.utime(path)          # marks it used, for clear_cache's age
@@ -1235,6 +1268,12 @@ class Compiled:
         self.sources, self.kernels = {}, {}
         self.unit = None
         self.incidence = ()
+        #: The kind of cell group it runs on, by ``shape.REFERENCE``; None for every group.
+        self.only = None
+
+    def _runs_on(self, group):
+        return group.count and (self.only is None
+                                or bool(getattr(group.shape, "REFERENCE", True)) == self.only)
 
     @property
     def type(self):
@@ -1255,7 +1294,7 @@ class Compiled:
         dtype = tack.vec3(data.dtype) if t == V else tack.mat3(data.dtype) if t == M else data.dtype
         # A point no cell uses is not written in the corner loop.
         alloc = tack.zeros if self.mode == "corners" else tack.empty
-        return alloc((self.space.size,), dtype)
+        return alloc((self.space.size,), dtype, device=data.device)
 
     def __call__(self, data, out=None):
         """Run over data. With one expression: a td.Field, out its array if given. With
@@ -1277,20 +1316,72 @@ class Compiled:
             kinds = [kind for kind, _ in self.args]
             fields = [p for kind, p in zip(kinds, payloads) if kind == "field"]
             for group in data.launch_groups("cells", [*fields, results[0]]):
-                if not group.count:
+                if not self._runs_on(group):
                     continue
                 variant, nodes = _node_variant(self.space, group.shape)
-                node_list = tack.array(np.asarray(nodes if hasattr(nodes, "__len__") else [0], dtype=np.int32))
+                node_list = tack.array(np.asarray(nodes if hasattr(nodes, "__len__") else [0], dtype=np.int32),
+                                       device=data.device)
                 node_count = len(nodes) if hasattr(nodes, "__len__") else int(nodes or 0)
                 self.kernel(variant)(data.domain_view("cells", group, incidence=self.incidence),
                                      *[p.view(group) if kind == "field" else p
                                        for kind, p in zip(kinds, payloads)],
                                      results[0].view(group), node_list, node_count, *outs, *consts)
-        else:
+        elif self.only is None:
             domain = "faces" if self.mode == "faces" else "cells"
             td.for_each(self.kernel("main"), data, domain, *payloads, *outs, *consts,
                         incidence=self.incidence if domain == "cells" else ())
+        else:
+            fields = [p for p in payloads if isinstance(p, td.Field)]
+            for group in data.launch_groups("cells", fields):
+                if self._runs_on(group):
+                    self.kernel("main")(
+                        data.domain_view("cells", group, incidence=self.incidence),
+                        *(p.view(group) if isinstance(p, td.Field) else p for p in payloads),
+                        *outs, *consts)
         return results[0] if self.names is None else dict(zip(self.names, results))
+
+
+class _Grouped:
+    """Compiled expressions over cells whose groups differ in kind (shapes beside
+    polyhedra or polygons): one ``Compiled`` for the groups with a reference element and
+    one for those without, each run on its own groups into the same outputs."""
+
+    def __init__(self, parts):
+        self.parts = parts
+        first = parts[True]
+        self.text, self.mode, self.space = first.text, first.mode, first.space
+        self.types, self.names = first.types, first.names
+        self.fields = sorted(set().union(*(p.fields for p in parts.values())))
+        self.incidence = tuple(sorted(set().union(*(p.incidence for p in parts.values()))))
+
+    @property
+    def type(self):
+        return self.types[0]
+
+    @property
+    def source(self):
+        return self.parts[True].source
+
+    @property
+    def unit(self):
+        return self.parts[True].unit
+
+    @unit.setter
+    def unit(self, value):
+        for part in self.parts.values():
+            part.unit = value
+
+    def __call__(self, data, out=None):
+        first = self.parts[True]
+        if self.names is None:
+            out = out if out is not None else first._allocate(data, self.types[0])
+        else:
+            given = out or {}
+            out = {n: given.get(n) if given.get(n) is not None else first._allocate(data, t)
+                   for n, t in zip(self.names, self.types)}
+        for part in self.parts.values():
+            result = part(data, out)
+        return result
 
 
 def _output(data, at):
@@ -1309,12 +1400,35 @@ def _output(data, at):
     raise ValueError("node output takes an L2 or H1 space of the dataset's topology")
 
 
+def _kinds_of_cells(data):
+    """The kinds of cell group a mixed topology holds, by ``shape.REFERENCE`` (shapes
+    beside polyhedra or polygons), or None for a topology whose cells are all of one kind."""
+    topology = data.topology
+    if getattr(topology, "reference_cells", True) or not getattr(topology, "mixed", False):
+        return None
+    kinds = {bool(getattr(g.shape, "REFERENCE", True)) for g in topology.groups() if g.count}
+    return kinds if len(kinds) > 1 else None
+
+
 def _compile(texts, data, at, replace_invalid, names):
+    """One Compiled, or on a mixed topology a _Grouped of one for its shapes and one for
+    its polyhedra or polygons, each read as cells of its kind are."""
+    if _kinds_of_cells(data) is None:
+        return _compile_one(texts, data, at, replace_invalid, names)
+    shapes_part = _compile_one(texts, data, at, replace_invalid, names, reference=True)
+    if shapes_part.mode not in ("cells", "corners", "nodes"):
+        return _compile_one(texts, data, at, replace_invalid, names)
+    fanned_part = _compile_one(texts, data, at, replace_invalid, names, reference=False)
+    shapes_part.only, fanned_part.only = True, False
+    return _Grouped({True: shapes_part, False: fanned_part})
+
+
+def _compile_one(texts, data, at, replace_invalid, names, reference=None):
     mode, space = _output(data, at)
     continuous = isinstance(space, td.H1) and mode == "nodes"
 
     def parse_all(mode, continuous):
-        c = _Compiler(texts[0], data, mode, continuous)
+        c = _Compiler(texts[0], data, mode, continuous, reference)
         parsed = [c.parse()]
         for text in texts[1:]:
             c.restart(text)
@@ -1394,7 +1508,7 @@ def compile_many(expressions, data, at="cells", replace_invalid=None, fields=Non
     """Several expressions, {name: text}, compiled into one kernel for output at: one
     launch, and each field read, derivative and conversion done once for all of them.
     Calling the result gives {name: td.Field}. units: one unit for all, or {name: unit}."""
-    from ._front import needs_front
+    from ._front import expands, needs_front
     if not expressions:
         raise ValueError("compile_many needs at least one expression")
     names = list(expressions)
@@ -1441,7 +1555,7 @@ def evaluate(text, data, at="cells", replace_invalid=None, name=None, update_gho
         if update_ghosts and pieces:
             first = compile_expression(text, pieces[0], at(pieces[0]) if callable(at) else at, replace_invalid,
                                        fields, units)
-            names = [n for n in first.fields if _exchangeable(pieces[0].fields[n])]
+            names = [n for n in first.fields if n in pieces[0].fields and _exchangeable(pieces[0].fields[n])]
             if names:
                 td.update_ghosts(data, *names)
         return [evaluate(text, piece, at(piece) if callable(at) else at, replace_invalid, name,
